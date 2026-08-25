@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+build/
+dist/
+
+# Local environment
+.venv/
+.env
+
+# Local app data
+data/email.db
+data/todo.db
+data/calendar.db
+data/*.db
+data/*.db-*
+data/*.sqlite
+data/*.sqlite-*
+
+# Editor and OS noise
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
