@@ -13,6 +13,20 @@ class EmailFolderInfo(TypedDict):
     label: str
 
 
+class EmailMessageInfo(TypedDict):
+    id: str
+    sender_name: str
+    sender_email: str
+    recipient_email: str
+    subject: str
+    body: str
+    received_at: str
+    folder: str
+    is_read: bool
+    created_at: str
+    updated_at: str
+
+
 def register_tools(mcp: MCPServer, settings: EmailMCPSettings) -> None:
     mcp.add_tool(
         build_list_email_folders_tool(settings),
@@ -23,6 +37,38 @@ def register_tools(mcp: MCPServer, settings: EmailMCPSettings) -> None:
             open_world_hint=False,
         ),
     )
+    mcp.add_tool(
+        build_get_oldest_unread_email_tool(settings),
+        name="get_oldest_unread_email",
+        title="Get oldest unread email",
+        annotations=ToolAnnotations(
+            read_only_hint=True,
+            open_world_hint=False,
+        ),
+    )
+    mcp.add_tool(
+        build_mark_email_read_tool(settings),
+        name="mark_email_read",
+        title="Mark email as read",
+        annotations=ToolAnnotations(
+            read_only_hint=False,
+            destructive_hint=False,
+            idempotent_hint=True,
+            open_world_hint=False,
+        ),
+    )
+    mcp.add_tool(
+        build_move_email_to_folder_tool(settings),
+        name="move_email_to_folder",
+        title="Move email to folder",
+        annotations=ToolAnnotations(
+            read_only_hint=False,
+            destructive_hint=False,
+            idempotent_hint=True,
+            open_world_hint=False,
+        ),
+    )
+
 
 def build_list_email_folders_tool(
     settings: EmailMCPSettings,
@@ -32,6 +78,36 @@ def build_list_email_folders_tool(
         return await get_email_folders(settings)
 
     return list_email_folders
+
+
+def build_get_oldest_unread_email_tool(
+    settings: EmailMCPSettings,
+) -> Callable[[], Awaitable[EmailMessageInfo | None]]:
+    async def get_oldest_unread_email() -> EmailMessageInfo | None:
+        """Get the oldest unread email message from the Email app mailbox."""
+        return await get_oldest_unread_email_from_api(settings)
+
+    return get_oldest_unread_email
+
+
+def build_mark_email_read_tool(
+    settings: EmailMCPSettings,
+) -> Callable[[str], Awaitable[EmailMessageInfo]]:
+    async def mark_email_read(message_id: str) -> EmailMessageInfo:
+        """Mark an email message as read by ID."""
+        return await mark_email_read_in_api(settings, message_id)
+
+    return mark_email_read
+
+
+def build_move_email_to_folder_tool(
+    settings: EmailMCPSettings,
+) -> Callable[[str, str], Awaitable[EmailMessageInfo]]:
+    async def move_email_to_folder(message_id: str, folder: str) -> EmailMessageInfo:
+        """Move an email message to a folder by ID."""
+        return await move_email_to_folder_in_api(settings, message_id, folder)
+
+    return move_email_to_folder
 
 
 async def get_email_folders(
@@ -46,6 +122,60 @@ async def get_email_folders(
         response.raise_for_status()
 
     return parse_email_folders_response(response.json())
+
+
+async def get_oldest_unread_email_from_api(
+    settings: EmailMCPSettings,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> EmailMessageInfo | None:
+    async with httpx.AsyncClient(
+        timeout=settings.email_api_timeout_seconds,
+        transport=transport,
+    ) as client:
+        response = await client.get(
+            settings.email_api_messages_url,
+            params={"is_read": "false", "limit": "1"},
+        )
+        response.raise_for_status()
+
+    messages = parse_email_messages_response(response.json())
+    if not messages:
+        return None
+    return messages[0]
+
+
+async def mark_email_read_in_api(
+    settings: EmailMCPSettings,
+    message_id: str,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> EmailMessageInfo:
+    async with httpx.AsyncClient(
+        timeout=settings.email_api_timeout_seconds,
+        transport=transport,
+    ) as client:
+        response = await client.post(f"{settings.email_api_messages_url}/{message_id}/read")
+        response.raise_for_status()
+
+    return parse_email_message_response(response.json())
+
+
+async def move_email_to_folder_in_api(
+    settings: EmailMCPSettings,
+    message_id: str,
+    folder: str,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> EmailMessageInfo:
+    async with httpx.AsyncClient(
+        timeout=settings.email_api_timeout_seconds,
+        transport=transport,
+    ) as client:
+        response = await client.post(
+            f"{settings.email_api_messages_url}/{message_id}/move",
+            json={"folder": folder},
+        )
+        response.raise_for_status()
+
+    return parse_email_message_response(response.json())
 
 
 def parse_email_folders_response(payload: Any) -> list[EmailFolderInfo]:
@@ -68,3 +198,57 @@ def parse_email_folders_response(payload: Any) -> list[EmailFolderInfo]:
         folders.append({"id": folder_id, "label": label})
 
     return folders
+
+
+def parse_email_messages_response(payload: Any) -> list[EmailMessageInfo]:
+    if not isinstance(payload, list):
+        msg = "Email API messages response must be a list."
+        raise ValueError(msg)
+
+    messages: list[EmailMessageInfo] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            msg = "Email API message item must be an object."
+            raise ValueError(msg)
+
+        message = parse_email_message_response(item)
+        messages.append(message)
+
+    return messages
+
+
+def parse_email_message_response(payload: dict[str, Any]) -> EmailMessageInfo:
+    string_fields = [
+        "id",
+        "sender_name",
+        "sender_email",
+        "recipient_email",
+        "subject",
+        "body",
+        "received_at",
+        "folder",
+        "created_at",
+        "updated_at",
+    ]
+    for field_name in string_fields:
+        if not isinstance(payload.get(field_name), str):
+            msg = f"Email API message item must contain string {field_name}."
+            raise ValueError(msg)
+
+    if not isinstance(payload.get("is_read"), bool):
+        msg = "Email API message item must contain boolean is_read."
+        raise ValueError(msg)
+
+    return {
+        "id": payload["id"],
+        "sender_name": payload["sender_name"],
+        "sender_email": payload["sender_email"],
+        "recipient_email": payload["recipient_email"],
+        "subject": payload["subject"],
+        "body": payload["body"],
+        "received_at": payload["received_at"],
+        "folder": payload["folder"],
+        "is_read": payload["is_read"],
+        "created_at": payload["created_at"],
+        "updated_at": payload["updated_at"],
+    }
