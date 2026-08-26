@@ -106,8 +106,8 @@ def seed_calendar() -> None:
                 id="00000000-0000-4000-8000-000000000301",
                 title="Встреча с Анной",
                 description="Обсудить учебный проект и следующие шаги.",
-                start_at=datetime(2026, 8, 12, 14, 30, tzinfo=CHICAGO),
-                end_at=datetime(2026, 8, 12, 15, 30, tzinfo=CHICAGO),
+                start_at=datetime(2026, 8, 12, 14, 30),
+                end_at=datetime(2026, 8, 12, 15, 30),
                 location="Office",
                 participants=[Participant(name="Анна", email="anna@example.test")],
             )
@@ -117,8 +117,8 @@ def seed_calendar() -> None:
                 id="00000000-0000-4000-8000-000000000302",
                 title="Отмененный созвон",
                 description="Пример отмененного события.",
-                start_at=datetime(2026, 8, 13, 10, 0, tzinfo=CHICAGO),
-                end_at=datetime(2026, 8, 13, 10, 30, tzinfo=CHICAGO),
+                start_at=datetime(2026, 8, 13, 10, 0),
+                end_at=datetime(2026, 8, 13, 10, 30),
                 location="",
                 participants=[Participant(name="Сергей", email="sergey@example.test")],
             )

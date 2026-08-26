@@ -6,6 +6,7 @@ Agent Training Suite is a local cross-platform training suite made of three inde
 - Email MCP server on `127.0.0.1:8111/mcp`;
 - Todo App on `127.0.0.1:8012`;
 - Calendar App on `127.0.0.1:8013`.
+- Calendar MCP endpoint on `127.0.0.1:8013/mcp`.
 
 ## Core Principle
 
@@ -28,6 +29,12 @@ Email MCP server
   -> Email app service layer
   -> Email app repository layer
   -> Email app SQLite database
+
+Calendar MCP endpoint
+  -> MCPServer tools
+  -> Calendar service layer
+  -> Calendar repository layer
+  -> Calendar SQLite database
 ```
 
 The UI and API use the same service layer. The UI does not run SQL queries directly.
@@ -38,6 +45,7 @@ The UI and API use the same service layer. The UI does not run SQL queries direc
 - Email MCP server is a separate Uvicorn process. It does not connect to SQLite directly; future MCP tools should call the Email app REST API.
 - Todo App uses `data/todo.db`.
 - Calendar App uses `data/calendar.db`.
+- Calendar MCP is mounted inside the Calendar App process and uses the same session factory as the Calendar API. Future tools should create a short-lived session per call and must not store a SQLAlchemy `Session` between MCP calls.
 - Business models are not moved into `shared`.
 - Applications do not import each other's business code.
 
@@ -49,13 +57,15 @@ The UI and API use the same service layer. The UI does not run SQL queries direc
 - shared API error format;
 - health endpoint helper;
 - logging setup;
-- timezone-aware datetime helpers;
-- SQLAlchemy type for UTC datetimes;
+- timezone-aware and local-naive datetime helpers;
+- SQLAlchemy types for UTC-aware and local-naive datetimes;
 - shared UI application status block.
 
 ## Dates And Time
 
-All meaningful datetimes are accepted as timezone-aware values. SQLite stores them as UTC ISO strings through `shared.sqlalchemy_types.UTCDateTime`.
+Email and Todo datetimes are accepted as timezone-aware values. SQLite stores them as UTC ISO strings through `shared.sqlalchemy_types.UTCDateTime`.
+
+Calendar datetimes are intentionally local naive values. Calendar API, UI, and MCP tools use values such as `2026-08-27T15:00:00` to mean 15:00 local time, without timezone offsets or UTC conversion. SQLite stores these calendar values as local ISO strings through `shared.sqlalchemy_types.LocalNaiveDateTime`.
 
 ## Database Initialization
 
@@ -85,4 +95,4 @@ Reset deletes only SQLite files inside `data/`. The next application startup rec
 
 ## v1 Boundaries
 
-v1 does not include MCP, LLMs, LangGraph, external services, authentication, real email, cloud deployment, or multi-user mode.
+v1 does not include LLMs, LangGraph, external services, authentication, real email, cloud deployment, or multi-user mode.

@@ -1,7 +1,6 @@
 from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
-from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi.testclient import TestClient
@@ -23,15 +22,8 @@ def api_payload(title: str = "Meeting with Anna") -> dict[str, object]:
     return {
         "title": title,
         "description": "Discuss training project",
-        "start_at": datetime(
-            2026,
-            8,
-            12,
-            14,
-            30,
-            tzinfo=ZoneInfo("America/Chicago"),
-        ).isoformat(),
-        "end_at": datetime(2026, 8, 12, 15, 30, tzinfo=ZoneInfo("America/Chicago")).isoformat(),
+        "start_at": datetime(2026, 8, 12, 14, 30).isoformat(),
+        "end_at": datetime(2026, 8, 12, 15, 30).isoformat(),
         "location": "Office",
         "participants": [{"name": "Anna", "email": "anna@example.test"}],
     }
@@ -83,15 +75,8 @@ def test_create_cancel_restore_and_delete_event_with_form_fields(client: TestCli
     payload = {
         "title": "Design review",
         "description": "Discuss the calendar dialog fields.",
-        "start_at": datetime(
-            2026,
-            8,
-            21,
-            18,
-            0,
-            tzinfo=ZoneInfo("America/Chicago"),
-        ).isoformat(),
-        "end_at": datetime(2026, 8, 21, 19, 0, tzinfo=ZoneInfo("America/Chicago")).isoformat(),
+        "start_at": datetime(2026, 8, 21, 18, 0).isoformat(),
+        "end_at": datetime(2026, 8, 21, 19, 0).isoformat(),
         "status": "confirmed",
         "location": "",
         "participants": [{"name": "Anna", "email": "anna@example.test"}],
@@ -128,15 +113,15 @@ def test_search_and_overlap_endpoint(client: TestClient) -> None:
     overlap_response = client.get(
         "/api/events/overlaps",
         params={
-            "start_at": "2026-08-12T20:00:00+00:00",
-            "end_at": "2026-08-12T21:00:00+00:00",
+            "start_at": "2026-08-12T15:00:00",
+            "end_at": "2026-08-12T16:00:00",
         },
     )
     excluded_response = client.get(
         "/api/events/overlaps",
         params={
-            "start_at": "2026-08-12T20:00:00+00:00",
-            "end_at": "2026-08-12T21:00:00+00:00",
+            "start_at": "2026-08-12T15:00:00",
+            "end_at": "2026-08-12T16:00:00",
             "exclude_event_id": created["id"],
         },
     )
@@ -151,6 +136,29 @@ def test_invalid_event_range_returns_standard_error(client: TestClient) -> None:
     payload["end_at"] = payload["start_at"]
 
     response = client.post("/api/events", json=payload)
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+def test_timezone_offset_returns_standard_error(client: TestClient) -> None:
+    payload = api_payload()
+    payload["start_at"] = "2026-08-12T14:30:00-05:00"
+
+    response = client.post("/api/events", json=payload)
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+def test_timezone_offset_query_returns_standard_error(client: TestClient) -> None:
+    response = client.get(
+        "/api/events/overlaps",
+        params={
+            "start_at": "2026-08-12T15:00:00-05:00",
+            "end_at": "2026-08-12T16:00:00",
+        },
+    )
 
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "VALIDATION_ERROR"

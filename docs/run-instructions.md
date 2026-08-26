@@ -16,6 +16,7 @@ Email app:    http://127.0.0.1:8011
 Email MCP:    http://127.0.0.1:8111/mcp
 Todo App:     http://127.0.0.1:8012
 Calendar App: http://127.0.0.1:8013
+Calendar MCP: http://127.0.0.1:8013/mcp
 ```
 
 OpenAPI is available at `/docs` in each application.

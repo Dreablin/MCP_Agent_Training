@@ -5,6 +5,7 @@ from datetime import datetime
 from apps.calendar_app.models import CalendarEventStatus
 from apps.calendar_app.repositories import CalendarEventRepository, EventSearch
 from apps.calendar_app.schemas import CalendarEventCreate, CalendarEventRead, CalendarEventUpdate
+from shared.datetime import require_naive
 from shared.errors import NotFoundError, ValidationAppError
 
 
@@ -60,6 +61,8 @@ class CalendarEventService:
         *,
         exclude_event_id: str | None = None,
     ) -> list[CalendarEventRead]:
+        start_at = self._require_local_datetime(start_at, "start_at")
+        end_at = self._require_local_datetime(end_at, "end_at")
         if end_at <= start_at:
             raise ValidationAppError(
                 "Range end time must be later than range start time",
@@ -80,3 +83,10 @@ class CalendarEventService:
     @staticmethod
     def _to_read_model(event: object) -> CalendarEventRead:
         return CalendarEventRead.model_validate(event)
+
+    @staticmethod
+    def _require_local_datetime(value: datetime, field_name: str) -> datetime:
+        try:
+            return require_naive(value, field_name)
+        except ValueError as exc:
+            raise ValidationAppError(str(exc), details={"field": field_name}) from exc

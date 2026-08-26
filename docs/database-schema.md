@@ -13,8 +13,9 @@ Each database belongs to one application. There are no shared tables between app
 ## General Storage Rules
 
 - Primary identifiers are stored as UUID strings with a length of 36 characters.
-- Meaningful dates and times are stored as ISO 8601 strings in UTC.
-- Python code reads dates back as timezone-aware `datetime` values.
+- Email and Todo dates and times are stored as ISO 8601 strings in UTC.
+- Calendar dates and times are stored as local naive ISO 8601 strings without timezone information.
+- Python code reads dates back as timezone-aware `datetime` values for Email and Todo, and naive `datetime` values for Calendar.
 - SQLite files are local working data and must not be committed to Git.
 
 ## `data/email.db`
@@ -78,14 +79,14 @@ Indexes:
 | `id` | `VARCHAR(36)` | no | Primary key, event UUID |
 | `title` | `VARCHAR(300)` | no | Event title |
 | `description` | `TEXT` | no | Event description |
-| `start_at` | `VARCHAR(40)` | no | Event start, ISO 8601 UTC |
-| `end_at` | `VARCHAR(40)` | no | Event end, ISO 8601 UTC |
-| `timezone` | `VARCHAR(100)` | no | Timezone marker; defaults to `local`; can store a valid IANA timezone if explicitly provided |
+| `start_at` | `VARCHAR(40)` | no | Event start, local naive ISO 8601 |
+| `end_at` | `VARCHAR(40)` | no | Event end, local naive ISO 8601 |
+| `timezone` | `VARCHAR(100)` | no | Compatibility marker; defaults to `local` and is not used for conversion |
 | `status` | `VARCHAR(30)` | no | `confirmed`, `tentative`, `cancelled` |
 | `location` | `VARCHAR(300)` | no | Event location |
 | `participants` | `JSON` | no | Array of participants |
-| `created_at` | `VARCHAR(40)` | no | Record creation time, ISO 8601 UTC |
-| `updated_at` | `VARCHAR(40)` | no | Last update time, ISO 8601 UTC |
+| `created_at` | `VARCHAR(40)` | no | Record creation time, local naive ISO 8601 |
+| `updated_at` | `VARCHAR(40)` | no | Last update time, local naive ISO 8601 |
 
 Primary key:
 

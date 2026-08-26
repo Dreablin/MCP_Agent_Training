@@ -18,9 +18,20 @@ def now_utc() -> datetime:
     return datetime.now(UTC)
 
 
+def now_local_naive() -> datetime:
+    return datetime.now()
+
+
 def require_aware(value: datetime, field_name: str = "datetime") -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
         msg = f"{field_name} must include timezone information"
+        raise ValueError(msg)
+    return value
+
+
+def require_naive(value: datetime, field_name: str = "datetime") -> datetime:
+    if value.tzinfo is not None and value.utcoffset() is not None:
+        msg = f"{field_name} must not include timezone information"
         raise ValueError(msg)
     return value
 

@@ -11,7 +11,6 @@ from apps.calendar_app.models import CalendarEventStatus
 from apps.calendar_app.repositories import CalendarEventRepository, EventSearch
 from apps.calendar_app.schemas import CalendarEventCreate, CalendarEventRead, Participant
 from apps.calendar_app.services import CalendarEventService
-from shared.datetime import get_timezone, now_utc
 from shared.errors import AppError
 
 T = TypeVar("T")
@@ -44,8 +43,7 @@ def register_pages(settings: CalendarAppSettings, session_factory: sessionmaker[
 
     @ui.page("/")
     def index() -> None:
-        local_timezone = get_timezone(settings.default_timezone)
-        today = now_utc().astimezone(local_timezone).date()
+        today = datetime.now().date()
         week_start = today - timedelta(days=today.weekday())
         selected_event_id: str | None = None
         selected_event_status = CalendarEventStatus.CONFIRMED
@@ -357,7 +355,7 @@ def register_pages(settings: CalendarAppSettings, session_factory: sessionmaker[
             return [week_start + timedelta(days=offset) for offset in range(7)]
 
         def week_bounds() -> tuple[datetime, datetime]:
-            start = datetime.combine(week_start, time.min, tzinfo=local_timezone)
+            start = datetime.combine(week_start, time.min)
             end = start + timedelta(days=7)
             return start, end
 
@@ -375,19 +373,17 @@ def register_pages(settings: CalendarAppSettings, session_factory: sessionmaker[
             )
 
         def day_range(day: date) -> tuple[datetime, datetime]:
-            start = datetime.combine(day, time(HOUR_START), tzinfo=local_timezone)
-            end = datetime.combine(day, time(HOUR_END), tzinfo=local_timezone)
+            start = datetime.combine(day, time(HOUR_START))
+            end = datetime.combine(day, time(HOUR_END))
             return start, end
 
         def format_event_time(event: CalendarEventRead) -> str:
-            start = event.start_at.astimezone(local_timezone)
-            end = event.end_at.astimezone(local_timezone)
-            return f"{start:%H:%M} - {end:%H:%M}"
+            return f"{event.start_at:%H:%M} - {event.end_at:%H:%M}"
 
         def event_style(event: CalendarEventRead, day: date) -> str:
             visible_start, visible_end = day_range(day)
-            event_start = max(event.start_at.astimezone(local_timezone), visible_start)
-            event_end = min(event.end_at.astimezone(local_timezone), visible_end)
+            event_start = max(event.start_at, visible_start)
+            event_end = min(event.end_at, visible_end)
             minutes_from_start = max(
                 0,
                 int((event_start - visible_start).total_seconds() // 60),
@@ -402,8 +398,7 @@ def register_pages(settings: CalendarAppSettings, session_factory: sessionmaker[
             return [
                 event
                 for event in events
-                if event.start_at.astimezone(local_timezone) < visible_end
-                and event.end_at.astimezone(local_timezone) > visible_start
+                if event.start_at < visible_end and event.end_at > visible_start
             ]
 
         def set_last_action(message: str, *, notify: bool = True) -> None:
@@ -436,7 +431,7 @@ def register_pages(settings: CalendarAppSettings, session_factory: sessionmaker[
                 raise ValueError(msg) from exc
 
         def reset_create_form() -> None:
-            default_date = now_utc().astimezone(local_timezone).date()
+            default_date = datetime.now().date()
             create_title_input.value = ""
             create_participant_name_input.value = ""
             create_participant_email_input.value = ""
@@ -456,8 +451,8 @@ def register_pages(settings: CalendarAppSettings, session_factory: sessionmaker[
                 event_date = parse_date_input(create_date_input.value)
                 start_time = parse_time_input(create_start_time_input.value, "Start time")
                 end_time = parse_time_input(create_end_time_input.value, "End time")
-                start_at = datetime.combine(event_date, start_time, tzinfo=local_timezone)
-                end_at = datetime.combine(event_date, end_time, tzinfo=local_timezone)
+                start_at = datetime.combine(event_date, start_time)
+                end_at = datetime.combine(event_date, end_time)
 
                 participants: list[Participant] = []
                 participant_email = str(create_participant_email_input.value or "").strip()
@@ -569,7 +564,7 @@ def register_pages(settings: CalendarAppSettings, session_factory: sessionmaker[
                 for _hour in range(HOUR_START, HOUR_END):
                     ui.element("div").classes("hour-cell")
 
-                now = now_utc().astimezone(local_timezone)
+                now = datetime.now()
                 if day == now.date() and HOUR_START <= now.hour < HOUR_END:
                     minutes = (now.hour - HOUR_START) * 60 + now.minute
                     top = minutes / 60 * HOUR_HEIGHT

@@ -1,3 +1,5 @@
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import uvicorn
@@ -7,6 +9,7 @@ from nicegui import ui
 from apps.calendar_app.api import events_router
 from apps.calendar_app.config import CalendarAppSettings, get_settings
 from apps.calendar_app.database import build_engine, build_session_factory
+from apps.calendar_app.mcp_server import create_mcp_server
 from apps.calendar_app.models import CalendarEvent  # noqa: F401
 from apps.calendar_app.ui.pages import register_pages
 from shared.database_setup import initialize_database_if_missing
@@ -24,9 +27,6 @@ def create_app(settings: CalendarAppSettings | None = None, *, include_ui: bool 
     resolved_settings.ensure_data_dir()
     configure_logging(resolved_settings.log_level)
 
-    app = FastAPI(title=resolved_settings.app_name, version=APP_VERSION)
-    app.state.settings = resolved_settings
-
     engine = build_engine(resolved_settings.database_url)
     initialize_database_if_missing(
         resolved_settings.db_path,
@@ -34,12 +34,29 @@ def create_app(settings: CalendarAppSettings | None = None, *, include_ui: bool 
         ALEMBIC_CONFIG,
         PROJECT_ROOT,
     )
+    session_factory = build_session_factory(engine)
+
+    mcp = create_mcp_server(session_factory)
+    mcp_app = mcp.streamable_http_app(streamable_http_path="/")
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        try:
+            async with mcp.session_manager.run():
+                yield
+        finally:
+            engine.dispose()
+
+    app = FastAPI(title=resolved_settings.app_name, version=APP_VERSION, lifespan=lifespan)
+    app.state.settings = resolved_settings
     app.state.engine = engine
-    app.state.session_factory = build_session_factory(engine)
+    app.state.session_factory = session_factory
+    app.state.mcp_server = mcp
 
     register_error_handlers(app)
     register_health_route(app, resolved_settings.app_name, APP_VERSION)
     app.include_router(events_router)
+    app.mount("/mcp", mcp_app)
 
     if include_ui:
         register_pages(resolved_settings, app.state.session_factory)

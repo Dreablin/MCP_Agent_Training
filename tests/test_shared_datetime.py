@@ -3,12 +3,19 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from shared.datetime import UTC, from_utc, require_aware, to_utc
+from shared.datetime import UTC, from_utc, require_aware, require_naive, to_utc
 
 
 def test_require_aware_rejects_naive_datetime() -> None:
     with pytest.raises(ValueError, match="must include timezone"):
         require_aware(datetime(2026, 8, 6, 12, 0), "start_at")
+
+
+def test_require_naive_rejects_aware_datetime() -> None:
+    chicago = ZoneInfo("America/Chicago")
+
+    with pytest.raises(ValueError, match="must not include timezone"):
+        require_naive(datetime(2026, 8, 6, 12, 0, tzinfo=chicago), "start_at")
 
 
 def test_to_utc_converts_aware_datetime() -> None:

@@ -1,7 +1,6 @@
 from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 import pytest
 from sqlalchemy.orm import Session
@@ -31,8 +30,8 @@ def event_payload(title: str = "Meeting with Anna") -> CalendarEventCreate:
     return CalendarEventCreate(
         title=title,
         description="Discuss training project",
-        start_at=datetime(2026, 8, 12, 14, 30, tzinfo=ZoneInfo("America/Chicago")),
-        end_at=datetime(2026, 8, 12, 15, 30, tzinfo=ZoneInfo("America/Chicago")),
+        start_at=datetime(2026, 8, 12, 14, 30),
+        end_at=datetime(2026, 8, 12, 15, 30),
         location="Office",
         participants=[Participant(name="Anna", email="anna@example.test")],
     )
@@ -50,8 +49,8 @@ def test_service_cancel_and_restore(service: CalendarEventService) -> None:
 
 def test_service_rejects_invalid_reschedule(service: CalendarEventService) -> None:
     created = service.create(event_payload())
-    start = datetime(2026, 8, 12, 16, 0, tzinfo=ZoneInfo("America/Chicago"))
-    end = datetime(2026, 8, 12, 15, 0, tzinfo=ZoneInfo("America/Chicago"))
+    start = datetime(2026, 8, 12, 16, 0)
+    end = datetime(2026, 8, 12, 15, 0)
 
     with pytest.raises(ValidationAppError):
         service.update(created.id, CalendarEventUpdate(start_at=start, end_at=end))
@@ -61,12 +60,12 @@ def test_service_find_overlaps(service: CalendarEventService) -> None:
     created = service.create(event_payload())
 
     overlaps = service.find_overlaps(
-        datetime(2026, 8, 12, 15, 0, tzinfo=ZoneInfo("America/Chicago")),
-        datetime(2026, 8, 12, 16, 0, tzinfo=ZoneInfo("America/Chicago")),
+        datetime(2026, 8, 12, 15, 0),
+        datetime(2026, 8, 12, 16, 0),
     )
     excluded = service.find_overlaps(
-        datetime(2026, 8, 12, 15, 0, tzinfo=ZoneInfo("America/Chicago")),
-        datetime(2026, 8, 12, 16, 0, tzinfo=ZoneInfo("America/Chicago")),
+        datetime(2026, 8, 12, 15, 0),
+        datetime(2026, 8, 12, 16, 0),
         exclude_event_id=created.id,
     )
 
