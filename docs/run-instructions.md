@@ -13,6 +13,7 @@ Local addresses after startup:
 
 ```text
 Email app:    http://127.0.0.1:8011
+Email MCP:    http://127.0.0.1:8111/mcp
 Todo App:     http://127.0.0.1:8012
 Calendar App: http://127.0.0.1:8013
 ```

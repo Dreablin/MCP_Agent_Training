@@ -12,6 +12,8 @@ The project is not a production system. It does not include real email delivery,
 - **Todo App**: a local task tracker for creating tasks, changing status and priority, completing tasks, and archiving them.
 - **Calendar App**: a local calendar for creating events, changing schedules, cancelling/restoring events, deleting events, and checking overlaps.
 
+The Email app also has a separate MCP server skeleton using the official MCP Python SDK v2, `MCPServer`, and Streamable HTTP. It currently contains only the shared wrapper where tools can be registered later. Future MCP tools should talk to the Email app through its REST API, not through direct database access.
+
 ## Documentation
 
 - [Architecture](docs/architecture.md)
@@ -29,6 +31,7 @@ After startup, the applications are available at:
 
 ```text
 Email app:    http://127.0.0.1:8011
+Email MCP:    http://127.0.0.1:8111/mcp
 Todo App:     http://127.0.0.1:8012
 Calendar App: http://127.0.0.1:8013
 ```

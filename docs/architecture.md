@@ -3,6 +3,7 @@
 Agent Training Suite is a local cross-platform training suite made of three independent applications:
 
 - Email app on `127.0.0.1:8011`;
+- Email MCP server on `127.0.0.1:8111/mcp`;
 - Todo App on `127.0.0.1:8012`;
 - Calendar App on `127.0.0.1:8013`.
 
@@ -20,6 +21,13 @@ FastAPI REST API
   -> Service layer
   -> Repository layer
   -> SQLite database
+
+Email MCP server
+  -> MCPServer tools
+  -> Email app REST API
+  -> Email app service layer
+  -> Email app repository layer
+  -> Email app SQLite database
 ```
 
 The UI and API use the same service layer. The UI does not run SQL queries directly.
@@ -27,6 +35,7 @@ The UI and API use the same service layer. The UI does not run SQL queries direc
 ## Application Isolation
 
 - Email app uses `data/email.db`.
+- Email MCP server is a separate Uvicorn process. It does not connect to SQLite directly; future MCP tools should call the Email app REST API.
 - Todo App uses `data/todo.db`.
 - Calendar App uses `data/calendar.db`.
 - Business models are not moved into `shared`.

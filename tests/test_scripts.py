@@ -3,7 +3,11 @@ from pathlib import Path
 import pytest
 
 from scripts.paths import assert_inside_data_dir
-from scripts.stop_all import parse_lsof_pids, parse_netstat_pids, parse_ss_pids
+from scripts.stop_all import DEFAULT_PORTS, parse_lsof_pids, parse_netstat_pids, parse_ss_pids
+
+
+def test_default_stop_ports_include_email_mcp() -> None:
+    assert DEFAULT_PORTS == [8011, 8012, 8013, 8111]
 
 
 def test_assert_inside_data_dir_rejects_project_file() -> None:

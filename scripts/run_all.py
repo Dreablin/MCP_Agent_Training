@@ -15,6 +15,7 @@ class AppProcess:
 
 APPS = [
     AppProcess("Email app", "apps.email_app.main", "http://127.0.0.1:8011"),
+    AppProcess("Email MCP server", "apps.email_MCP.main", "http://127.0.0.1:8111/mcp"),
     AppProcess("Todo App", "apps.todo_app.main", "http://127.0.0.1:8012"),
     AppProcess("Calendar App", "apps.calendar_app.main", "http://127.0.0.1:8013"),
 ]

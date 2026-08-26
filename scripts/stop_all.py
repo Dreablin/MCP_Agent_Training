@@ -3,7 +3,7 @@ import re
 import signal
 import subprocess
 
-DEFAULT_PORTS = [8011, 8012, 8013]
+DEFAULT_PORTS = [8011, 8012, 8013, 8111]
 
 
 def parse_netstat_pids(output: str, ports: list[int]) -> set[int]:
@@ -131,7 +131,7 @@ def stop_all(ports: list[int] | None = None) -> list[int]:
 def main() -> None:
     stopped = stop_all()
     if not stopped:
-        print("No local app processes found on ports 8011, 8012, 8013.")
+        print("No local app processes found on ports 8011, 8012, 8013, 8111.")
         return
     print("Stopped local app processes:")
     for pid in stopped:

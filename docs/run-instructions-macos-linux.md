@@ -45,6 +45,7 @@ After startup, open:
 
 ```text
 http://127.0.0.1:8011
+http://127.0.0.1:8111/mcp
 http://127.0.0.1:8012
 http://127.0.0.1:8013
 ```
@@ -54,6 +55,7 @@ To Start One Application
 
 ```bash
 python -m apps.email_app.main
+python -m apps.email_MCP.main
 python -m apps.todo_app.main
 python -m apps.calendar_app.main
 ```
