@@ -19,26 +19,36 @@ def client(tmp_path: Path) -> TestClient:
     return TestClient(app)
 
 
-def api_payload(subject: str = "Meeting with Anna") -> dict[str, str]:
+def api_payload(
+    subject: str = "Meeting with Anna",
+    received_at: datetime | None = None,
+) -> dict[str, str]:
     return {
         "sender_name": "Anna",
         "sender_email": "anna@example.test",
         "recipient_email": "me@example.test",
         "subject": subject,
         "body": "Let's meet tomorrow.",
-        "received_at": datetime(
-            2026,
-            8,
-            6,
-            12,
-            0,
-            tzinfo=ZoneInfo("America/Chicago"),
+        "received_at": (
+            received_at
+            or datetime(
+                2026,
+                8,
+                6,
+                12,
+                0,
+                tzinfo=ZoneInfo("America/Chicago"),
+            )
         ).isoformat(),
     }
 
 
-def create_message(client: TestClient, subject: str = "Meeting with Anna") -> dict[str, Any]:
-    response = client.post("/api/messages", json=api_payload(subject))
+def create_message(
+    client: TestClient,
+    subject: str = "Meeting with Anna",
+    received_at: datetime | None = None,
+) -> dict[str, Any]:
+    response = client.post("/api/messages", json=api_payload(subject, received_at))
     assert response.status_code == 201
     return cast(dict[str, Any], response.json())
 
@@ -67,6 +77,74 @@ def test_search_and_filter_messages(client: TestClient) -> None:
     assert [message["id"] for message in search_response.json()] == [second["id"]]
     assert [message["id"] for message in inbox_response.json()] == [first["id"]]
     assert [message["id"] for message in trash_response.json()] == [second["id"]]
+
+
+def test_list_messages_returns_oldest_first(client: TestClient) -> None:
+    newest = create_message(
+        client,
+        "Newest",
+        datetime(2026, 8, 6, 14, 0, tzinfo=ZoneInfo("America/Chicago")),
+    )
+    oldest = create_message(
+        client,
+        "Oldest",
+        datetime(2026, 8, 6, 10, 0, tzinfo=ZoneInfo("America/Chicago")),
+    )
+    middle = create_message(
+        client,
+        "Middle",
+        datetime(2026, 8, 6, 12, 0, tzinfo=ZoneInfo("America/Chicago")),
+    )
+
+    response = client.get("/api/messages")
+
+    assert response.status_code == 200
+    assert [message["id"] for message in response.json()] == [
+        oldest["id"],
+        middle["id"],
+        newest["id"],
+    ]
+
+
+def test_list_messages_limit_one_returns_oldest_unread(client: TestClient) -> None:
+    newest = create_message(
+        client,
+        "Newest unread",
+        datetime(2026, 8, 6, 14, 0, tzinfo=ZoneInfo("America/Chicago")),
+    )
+    oldest = create_message(
+        client,
+        "Oldest unread",
+        datetime(2026, 8, 6, 10, 0, tzinfo=ZoneInfo("America/Chicago")),
+    )
+    read_message = create_message(
+        client,
+        "Older read",
+        datetime(2026, 8, 6, 8, 0, tzinfo=ZoneInfo("America/Chicago")),
+    )
+    client.post(f"/api/messages/{read_message['id']}/read")
+
+    response = client.get("/api/messages", params={"is_read": False, "limit": 1})
+
+    assert response.status_code == 200
+    assert [message["id"] for message in response.json()] == [oldest["id"]]
+    assert newest["id"] not in [message["id"] for message in response.json()]
+
+
+def test_list_messages_supports_limit_and_offset(client: TestClient) -> None:
+    messages = [
+        create_message(
+            client,
+            f"Message {index}",
+            datetime(2026, 8, 6, 10 + index, 0, tzinfo=ZoneInfo("America/Chicago")),
+        )
+        for index in range(3)
+    ]
+
+    response = client.get("/api/messages", params={"limit": 1, "offset": 1})
+
+    assert response.status_code == 200
+    assert [message["id"] for message in response.json()] == [messages[1]["id"]]
 
 
 def test_read_trash_delete_flow(client: TestClient) -> None:
