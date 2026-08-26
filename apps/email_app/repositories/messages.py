@@ -55,8 +55,8 @@ class EmailMessageRepository:
         criteria = search or EmailSearch()
         statement = self._apply_search(select(EmailMessage), criteria)
         statement = statement.order_by(
-            EmailMessage.received_at.desc(),
-            EmailMessage.created_at.desc(),
+            EmailMessage.received_at.asc(),
+            EmailMessage.created_at.asc(),
         )
         statement = statement.offset(criteria.offset).limit(criteria.limit)
         return list(self._session.scalars(statement).all())

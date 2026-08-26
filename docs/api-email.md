@@ -96,7 +96,9 @@ Response:
 
 ### `GET /api/messages`
 
-Get a list of messages.
+Get a list of messages. Results are ordered by `received_at` ascending, so the oldest
+messages are returned first. If two messages have the same `received_at`, `created_at`
+ascending is used as the tie-breaker.
 
 Query parameters:
 
@@ -114,6 +116,18 @@ Example:
 
 ```text
 GET /api/messages?folder=inbox&is_read=false&query=meeting
+```
+
+Get the oldest unread message:
+
+```text
+GET /api/messages?is_read=false&limit=1
+```
+
+Get the second page of 100 messages:
+
+```text
+GET /api/messages?limit=100&offset=100
 ```
 
 Response:
