@@ -61,6 +61,15 @@ python -m apps.todo_app.main
 python -m apps.calendar_app.main
 ```
 
+To run the local Todo MCP server manually, use:
+
+```powershell
+python -m apps.todo_MCP.main
+```
+
+Todo MCP uses stdio for JSON-RPC. It has no URL and is normally launched by an
+MCP client as a child process, not by `scripts.run_all`.
+
 ## Stop Applications
 
 If applications were started through `python -m scripts.run_all`, press `Ctrl+C` in that PowerShell window.

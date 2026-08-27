@@ -2,7 +2,7 @@
 
 Agent Training Suite is a local educational project for practicing MCP integration and agentic workflows on top of existing applications.
 
-The repository contains three small, independent web applications. They are intentionally simple, local-only, and built as regular applications first. This makes them useful as a training base: learners can later build MCP servers and agent scenarios that interact with the apps through their REST APIs, without changing the application internals.
+The repository contains three small, independent web applications. They are intentionally simple, local-only, and built as regular applications first. This makes them useful as a training base for MCP servers and agent scenarios that integrate with existing app boundaries instead of replacing the applications themselves.
 
 The project is not a production system. It does not include real email delivery, external service integrations, authentication, cloud deployment, or multi-user support.
 
@@ -12,13 +12,15 @@ The project is not a production system. It does not include real email delivery,
 - **Todo App**: a local task tracker for creating tasks, changing status and priority, completing tasks, and archiving them.
 - **Calendar App**: a local calendar for creating events, changing schedules, cancelling/restoring events, deleting events, and checking overlaps. Calendar times are treated as local naive values without timezone conversion.
 
-The Email app also has a separate MCP server skeleton using the official MCP Python SDK v2, `MCPServer`, and Streamable HTTP. It currently contains only the shared wrapper where tools can be registered later. Future MCP tools should talk to the Email app through its REST API, not through direct database access.
-
-The Calendar App exposes an embedded MCP server in the same Uvicorn process as its FastAPI API and NiceGUI UI. Future Calendar MCP tools should use the Calendar service layer with the same session factory used by the API.
-
 ## MCP Integration Approaches
 
-The suite demonstrates two ways to add MCP to an existing application.
+The suite intentionally demonstrates three different MCP integration styles. They are not competing implementations of the same design; they are separate training examples for different deployment and ownership boundaries.
+
+| App | MCP style | Transport | How tools reach app logic |
+| --- | --- | --- | --- |
+| Email | Separate MCP server process | Streamable HTTP | Existing Email REST API |
+| Calendar | MCP embedded in the app process | Streamable HTTP mounted under FastAPI | Calendar service layer and shared session factory |
+| Todo | Local child process launched by the agent | stdio JSON-RPC | Todo service layer and shared SQLite database |
 
 The Email MCP server is a separate Uvicorn process. It owns its own `MCPServer` instance
 and exposes it through Streamable HTTP, but it treats the Email app as an external
@@ -28,13 +30,18 @@ that integrate through public API contracts.
 
 The Calendar MCP server is embedded into the Calendar app process. The main FastAPI app
 creates an `MCPServer`, turns it into an ASGI app with `streamable_http_app()`, mounts it
-under `/mcp`, and starts the MCP session manager from the FastAPI lifespan. In this mode,
-future tools should call the same Calendar service layer used by the REST API and NiceGUI
-UI. Tools should close over the shared SQLAlchemy session factory stored on the FastAPI
-application state, then open a short-lived service/session scope for each tool call. They
-should not keep a `Session` object alive between MCP calls. This shows how MCP can be
-added inside an existing ASGI application without introducing a second server process or
-an HTTP hop back into the same application.
+under `/mcp`, and starts the MCP session manager from the FastAPI lifespan. Tools call the
+same Calendar service layer used by the REST API and NiceGUI UI. They close over the shared
+SQLAlchemy session factory stored on the FastAPI application state, then open a short-lived
+service/session scope for each tool call. They should not keep a `Session` object alive
+between MCP calls. This shows how MCP can be added inside an existing ASGI application
+without introducing a second server process or an HTTP hop back into the same application.
+
+The Todo MCP server is a local stdio process. An MCP client starts it as a child
+process, sends JSON-RPC messages through stdin, and reads responses from stdout.
+It does not expose a port, does not run Uvicorn, and is not mounted into FastAPI.
+Todo MCP tools use the Todo service layer with a short-lived SQLAlchemy session per tool
+call, using the same SQLite database as the Todo app.
 
 ## Documentation
 
@@ -60,3 +67,9 @@ Calendar MCP: http://127.0.0.1:8013/mcp
 ```
 
 OpenAPI documentation is available at `/docs` in each application.
+
+Todo MCP has no URL. It is launched by an MCP client over stdio, for example:
+
+```bash
+python -m apps.todo_MCP.main
+```

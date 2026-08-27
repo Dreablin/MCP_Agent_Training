@@ -20,3 +20,10 @@ Calendar MCP: http://127.0.0.1:8013/mcp
 ```
 
 OpenAPI is available at `/docs` in each application.
+
+Todo MCP is local stdio-only and has no URL. An MCP client launches it as a child
+process when needed:
+
+```bash
+python -m apps.todo_MCP.main
+```

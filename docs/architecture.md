@@ -5,6 +5,7 @@ Agent Training Suite is a local cross-platform training suite made of three inde
 - Email app on `127.0.0.1:8011`;
 - Email MCP server on `127.0.0.1:8111/mcp`;
 - Todo App on `127.0.0.1:8012`;
+- Todo MCP server over local stdio, with no port or URL;
 - Calendar App on `127.0.0.1:8013`.
 - Calendar MCP endpoint on `127.0.0.1:8013/mcp`.
 
@@ -35,6 +36,12 @@ Calendar MCP endpoint
   -> Calendar service layer
   -> Calendar repository layer
   -> Calendar SQLite database
+
+Todo MCP stdio process
+  -> MCPServer tools
+  -> Todo service layer
+  -> Todo repository layer
+  -> Todo SQLite database
 ```
 
 The UI and API use the same service layer. The UI does not run SQL queries directly.
@@ -44,6 +51,7 @@ The UI and API use the same service layer. The UI does not run SQL queries direc
 - Email app uses `data/email.db`.
 - Email MCP server is a separate Uvicorn process. It does not connect to SQLite directly; future MCP tools should call the Email app REST API.
 - Todo App uses `data/todo.db`.
+- Todo MCP server is launched by an MCP client as a local stdio child process. It has no HTTP server, port, Uvicorn process, or FastAPI mount. Future tools should create a short-lived session per call and must not store a SQLAlchemy `Session` between MCP calls.
 - Calendar App uses `data/calendar.db`.
 - Calendar MCP is mounted inside the Calendar App process and uses the same session factory as the Calendar API. Future tools should create a short-lived session per call and must not store a SQLAlchemy `Session` between MCP calls.
 - Business models are not moved into `shared`.
