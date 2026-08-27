@@ -29,7 +29,6 @@ class CalendarEventBase(BaseModel):
     description: str = Field(default="", max_length=20_000)
     start_at: datetime
     end_at: datetime
-    timezone: str = "local"
     status: CalendarEventStatus = CalendarEventStatus.CONFIRMED
     location: str = Field(default="", max_length=300)
     participants: list[Participant] = Field(default_factory=list)
@@ -56,7 +55,6 @@ class CalendarEventUpdate(BaseModel):
     description: str | None = Field(default=None, max_length=20_000)
     start_at: datetime | None = None
     end_at: datetime | None = None
-    timezone: str | None = None
     status: CalendarEventStatus | None = None
     location: str | None = Field(default=None, max_length=300)
     participants: list[Participant] | None = None

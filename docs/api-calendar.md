@@ -45,7 +45,6 @@ Response `200`:
   "description": "Discuss the training project.",
   "start_at": "2026-08-12T14:30:00",
   "end_at": "2026-08-12T15:30:00",
-  "timezone": "local",
   "status": "confirmed",
   "location": "Office",
   "participants": [
@@ -101,7 +100,6 @@ Optional fields:
 
 - `id`: UUID string.
 - `description`: defaults to an empty string.
-- `timezone`: defaults to `local`; kept for compatibility and not used for conversion.
 - `status`: defaults to `confirmed`.
 - `location`: defaults to an empty string.
 - `participants`: defaults to an empty array.
@@ -110,11 +108,13 @@ Rules:
 
 - `start_at` and `end_at` must not include timezone information;
 - `end_at` must be later than `start_at`;
-- timezone offsets such as `Z`, `+00:00`, and `-05:00` are not accepted for calendar datetimes.
+- timezone offsets such as `Z`, `+00:00`, and `-05:00` are not accepted for calendar datetimes;
+- active events (`confirmed` and `tentative`) must not overlap other active events.
 
 Response:
 
 - `201 Created`: Calendar Event.
+- `409 Conflict`: event overlaps with an existing active event.
 
 ### `GET /api/events`
 
@@ -201,12 +201,14 @@ All fields are optional.
 
 Rule:
 
-- if the resulting update has `end_at <= start_at`, the API returns `422`.
+- if the resulting update has `end_at <= start_at`, the API returns `422`;
+- if the resulting active event overlaps another active event, the API returns `409`.
 
 Response:
 
 - `200 OK`: Calendar Event.
 - `404 Not Found`: event not found.
+- `409 Conflict`: event overlaps with an existing active event.
 - `422 Unprocessable Entity`: invalid data.
 
 ### `POST /api/events/{event_id}/cancel`
@@ -226,6 +228,7 @@ Response:
 
 - `200 OK`: Calendar Event with `status = "confirmed"`.
 - `404 Not Found`: event not found.
+- `409 Conflict`: restored event overlaps with an existing active event.
 
 ### `DELETE /api/events/{event_id}`
 

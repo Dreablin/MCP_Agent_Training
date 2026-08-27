@@ -37,4 +37,5 @@ class LocalNaiveDateTime(TypeDecorator[datetime]):
     def process_result_value(self, value: str | None, dialect: Dialect) -> datetime | None:
         if value is None:
             return None
-        return require_naive(datetime.fromisoformat(value))
+        parsed = datetime.fromisoformat(value)
+        return parsed.replace(tzinfo=None)

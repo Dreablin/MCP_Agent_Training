@@ -14,6 +14,7 @@ from apps.calendar_app.mcp_tools import (
     search_calendar_events_with_service,
     update_calendar_event_with_service,
 )
+from apps.calendar_app.models import CalendarEventStatus
 from apps.calendar_app.schemas import CalendarEventCreate, Participant
 
 
@@ -141,14 +142,14 @@ def test_list_calendar_events_tool_returns_events_overlapping_range() -> None:
                 end_at=datetime(2026, 8, 26, 11, 0),
             )
         )
-        cancelled = service.create(
+        service.create(
             CalendarEventCreate(
                 title="Cancelled",
                 start_at=datetime(2026, 8, 26, 10, 30),
                 end_at=datetime(2026, 8, 26, 11, 30),
+                status=CalendarEventStatus.CANCELLED,
             )
         )
-        service.cancel(cancelled.id)
         service.create(
             CalendarEventCreate(
                 title="Lunch",

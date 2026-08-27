@@ -43,3 +43,14 @@ def test_local_naive_datetime_round_trip() -> None:
 
     assert stored == "2026-08-06T12:00:00"
     assert restored == datetime(2026, 8, 6, 12, 0)
+
+
+def test_local_naive_datetime_strips_legacy_timezone_on_read() -> None:
+    column_type = LocalNaiveDateTime()
+
+    restored = column_type.process_result_value(
+        "2026-08-06T17:00:00+00:00",
+        dialect=None,  # type: ignore[arg-type]
+    )
+
+    assert restored == datetime(2026, 8, 6, 17, 0)

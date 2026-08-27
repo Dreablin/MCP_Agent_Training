@@ -54,7 +54,7 @@ def test_create_event_without_status_and_location(client: TestClient) -> None:
     response = client.post("/api/events", json=payload)
 
     assert response.status_code == 201
-    assert response.json()["timezone"] == "local"
+    assert "timezone" not in response.json()
     assert response.json()["status"] == "confirmed"
     assert response.json()["location"] == ""
 
@@ -89,7 +89,7 @@ def test_create_cancel_restore_and_delete_event_with_form_fields(client: TestCli
     assert created["title"] == "Design review"
     assert created["description"] == "Discuss the calendar dialog fields."
     assert created["participants"] == [{"name": "Anna", "email": "anna@example.test"}]
-    assert created["timezone"] == "local"
+    assert "timezone" not in created
 
     cancelled_response = client.post(f"/api/events/{created['id']}/cancel")
     assert cancelled_response.status_code == 200
@@ -162,6 +162,40 @@ def test_timezone_offset_query_returns_standard_error(client: TestClient) -> Non
 
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+
+def test_overlapping_create_returns_conflict_error(client: TestClient) -> None:
+    created = create_event(client)
+    payload = api_payload("Overlapping meeting")
+    payload["start_at"] = "2026-08-12T15:00:00"
+    payload["end_at"] = "2026-08-12T16:00:00"
+
+    response = client.post("/api/events", json=payload)
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "CONFLICT"
+    assert response.json()["error"]["details"]["conflicting_event_ids"] == [created["id"]]
+
+
+def test_overlapping_update_returns_conflict_error(client: TestClient) -> None:
+    first = create_event(client)
+    second_payload = api_payload("Second meeting")
+    second_payload["start_at"] = "2026-08-12T16:00:00"
+    second_payload["end_at"] = "2026-08-12T17:00:00"
+    second_response = client.post("/api/events", json=second_payload)
+    second = second_response.json()
+
+    response = client.patch(
+        f"/api/events/{second['id']}",
+        json={
+            "start_at": "2026-08-12T15:00:00",
+            "end_at": "2026-08-12T16:00:00",
+        },
+    )
+
+    assert second_response.status_code == 201
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "CONFLICT"
+    assert response.json()["error"]["details"]["conflicting_event_ids"] == [first["id"]]
 
 
 def test_missing_event_returns_standard_error(client: TestClient) -> None:

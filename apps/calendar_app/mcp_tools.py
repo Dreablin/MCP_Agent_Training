@@ -171,7 +171,7 @@ def update_calendar_event_tool(
         location: str | None = None,
         participants: list[dict[str, str]] | None = None,
     ) -> CalendarEventInfo:
-        """Update an existing calendar event by ID. Also can be used to cancel an event"""
+        """Update an existing calendar event by ID."""
         return update_calendar_event_with_service(
             session_factory,
             event_id=event_id,

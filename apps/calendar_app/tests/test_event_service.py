@@ -10,7 +10,7 @@ from apps.calendar_app.models import CalendarEventStatus
 from apps.calendar_app.repositories import CalendarEventRepository
 from apps.calendar_app.schemas import CalendarEventCreate, CalendarEventUpdate, Participant
 from apps.calendar_app.services import CalendarEventService
-from shared.errors import NotFoundError, ValidationAppError
+from shared.errors import ConflictError, NotFoundError, ValidationAppError
 
 
 @pytest.fixture
@@ -54,6 +54,70 @@ def test_service_rejects_invalid_reschedule(service: CalendarEventService) -> No
 
     with pytest.raises(ValidationAppError):
         service.update(created.id, CalendarEventUpdate(start_at=start, end_at=end))
+
+
+def test_service_rejects_overlapping_create(service: CalendarEventService) -> None:
+    service.create(event_payload())
+
+    with pytest.raises(ConflictError) as exc_info:
+        service.create(
+            CalendarEventCreate(
+                title="Overlapping",
+                start_at=datetime(2026, 8, 12, 15, 0),
+                end_at=datetime(2026, 8, 12, 16, 0),
+            )
+        )
+
+    assert exc_info.value.code == "CONFLICT"
+
+
+def test_service_allows_adjacent_events(service: CalendarEventService) -> None:
+    service.create(event_payload())
+
+    created = service.create(
+        CalendarEventCreate(
+            title="Adjacent",
+            start_at=datetime(2026, 8, 12, 15, 30),
+            end_at=datetime(2026, 8, 12, 16, 0),
+        )
+    )
+
+    assert created.title == "Adjacent"
+
+
+def test_service_rejects_overlapping_reschedule(service: CalendarEventService) -> None:
+    service.create(event_payload(title="First"))
+    second = service.create(
+        CalendarEventCreate(
+            title="Second",
+            start_at=datetime(2026, 8, 12, 16, 0),
+            end_at=datetime(2026, 8, 12, 17, 0),
+        )
+    )
+
+    with pytest.raises(ConflictError):
+        service.update(
+            second.id,
+            CalendarEventUpdate(
+                start_at=datetime(2026, 8, 12, 15, 0),
+                end_at=datetime(2026, 8, 12, 16, 0),
+            ),
+        )
+
+
+def test_service_rejects_restore_when_event_would_overlap(service: CalendarEventService) -> None:
+    service.create(event_payload(title="First"))
+    cancelled = service.create(
+        CalendarEventCreate(
+            title="Cancelled overlap",
+            start_at=datetime(2026, 8, 12, 15, 0),
+            end_at=datetime(2026, 8, 12, 16, 0),
+            status=CalendarEventStatus.CANCELLED,
+        )
+    )
+
+    with pytest.raises(ConflictError):
+        service.restore(cancelled.id)
 
 
 def test_service_find_overlaps(service: CalendarEventService) -> None:

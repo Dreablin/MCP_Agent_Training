@@ -40,6 +40,16 @@ class NotFoundError(AppError):
         )
 
 
+class ConflictError(AppError):
+    def __init__(self, message: str, *, details: dict[str, Any] | None = None) -> None:
+        super().__init__(
+            ErrorCode.CONFLICT,
+            message,
+            http_status=status.HTTP_409_CONFLICT,
+            details=details,
+        )
+
+
 class ValidationAppError(AppError):
     def __init__(self, message: str, *, details: dict[str, Any] | None = None) -> None:
         super().__init__(
