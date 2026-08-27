@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta
 
 import pytest
+from mcp.server.mcpserver.exceptions import ToolError
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -120,6 +121,31 @@ def test_create_calendar_event_tool_uses_service_layer() -> None:
     assert stored.title == "Planning"
     assert stored.start_at == datetime(2026, 8, 26, 10, 0)
     assert event["start_at"] == "2026-08-26T10:00:00"
+
+
+def test_create_calendar_event_tool_reports_overlap_conflict() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    session_factory: sessionmaker[Session] = sessionmaker(bind=engine, expire_on_commit=False)
+
+    existing = create_calendar_event_with_service(
+        session_factory,
+        title="Planning",
+        start_at=datetime(2026, 8, 26, 10, 0),
+        end_at=datetime(2026, 8, 26, 11, 0),
+    )
+
+    with pytest.raises(ToolError) as exc_info:
+        create_calendar_event_with_service(
+            session_factory,
+            title="Overlapping planning",
+            start_at=datetime(2026, 8, 26, 10, 30),
+            end_at=datetime(2026, 8, 26, 11, 30),
+        )
+
+    message = str(exc_info.value)
+    assert "CONFLICT: Calendar event overlaps with an existing event." in message
+    assert f'conflicting_event_ids=["{existing["id"]}"]' in message
 
 
 def test_list_calendar_events_tool_returns_events_overlapping_range() -> None:
@@ -292,6 +318,37 @@ def test_update_calendar_event_tool_updates_existing_event() -> None:
 
     assert stored.title == "Updated planning"
     assert stored.start_at == datetime(2026, 8, 26, 12, 0)
+
+
+def test_update_calendar_event_tool_reports_overlap_conflict() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    session_factory: sessionmaker[Session] = sessionmaker(bind=engine, expire_on_commit=False)
+
+    existing = create_calendar_event_with_service(
+        session_factory,
+        title="Planning",
+        start_at=datetime(2026, 8, 26, 10, 0),
+        end_at=datetime(2026, 8, 26, 11, 0),
+    )
+    moving = create_calendar_event_with_service(
+        session_factory,
+        title="Sales call",
+        start_at=datetime(2026, 8, 26, 12, 0),
+        end_at=datetime(2026, 8, 26, 13, 0),
+    )
+
+    with pytest.raises(ToolError) as exc_info:
+        update_calendar_event_with_service(
+            session_factory,
+            event_id=moving["id"],
+            start_at=datetime(2026, 8, 26, 10, 30),
+            end_at=datetime(2026, 8, 26, 11, 30),
+        )
+
+    message = str(exc_info.value)
+    assert "CONFLICT: Calendar event overlaps with an existing event." in message
+    assert f'conflicting_event_ids=["{existing["id"]}"]' in message
 
 
 def test_update_calendar_event_tool_requires_at_least_one_field() -> None:

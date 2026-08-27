@@ -1,9 +1,11 @@
+import json
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from datetime import datetime
 from typing import TypedDict
 
 from mcp.server import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -17,6 +19,7 @@ from apps.calendar_app.schemas import (
 )
 from apps.calendar_app.services import CalendarEventService
 from shared.datetime import require_naive
+from shared.errors import ConflictError
 
 
 class CalendarParticipantInfo(TypedDict):
@@ -269,8 +272,11 @@ def create_calendar_event_with_service(
         ],
     )
 
-    with calendar_event_service_scope(session_factory) as service:
-        created = service.create(payload)
+    try:
+        with calendar_event_service_scope(session_factory) as service:
+            created = service.create(payload)
+    except ConflictError as exc:
+        raise ToolError(format_calendar_conflict_error(exc)) from exc
 
     return calendar_event_to_info(created)
 
@@ -308,8 +314,11 @@ def update_calendar_event_with_service(
 
     payload = CalendarEventUpdate.model_validate(update_values)
 
-    with calendar_event_service_scope(session_factory) as service:
-        updated = service.update(event_id, payload)
+    try:
+        with calendar_event_service_scope(session_factory) as service:
+            updated = service.update(event_id, payload)
+    except ConflictError as exc:
+        raise ToolError(format_calendar_conflict_error(exc)) from exc
 
     return calendar_event_to_info(updated)
 
@@ -348,6 +357,17 @@ def validate_pagination(limit: int, offset: int) -> None:
     if offset < 0:
         msg = "offset must be greater than or equal to 0"
         raise ValueError(msg)
+
+
+def format_calendar_conflict_error(exc: ConflictError) -> str:
+    raw_ids = exc.details.get("conflicting_event_ids", [])
+    conflicting_event_ids = (
+        [str(event_id) for event_id in raw_ids] if isinstance(raw_ids, list) else []
+    )
+    return (
+        f"{exc.code.value}: {exc.message}. "
+        f"conflicting_event_ids={json.dumps(conflicting_event_ids)}"
+    )
 
 
 def calendar_event_to_info(event: CalendarEventRead) -> CalendarEventInfo:
