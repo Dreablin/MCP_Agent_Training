@@ -1,4 +1,6 @@
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from fastapi.testclient import TestClient
 from sqlalchemy import inspect
@@ -32,7 +34,7 @@ def test_default_database_paths_are_distinct() -> None:
 
 
 def test_all_apps_expose_health_and_openapi(tmp_path: Path) -> None:
-    app_factories = [
+    app_factories: list[tuple[Callable[..., Any], Any, str]] = [
         (create_email_app, EmailAppSettings(db_path=tmp_path / "email.db"), "email_messages"),
         (create_todo_app, TodoAppSettings(db_path=tmp_path / "todo.db"), "tasks"),
         (

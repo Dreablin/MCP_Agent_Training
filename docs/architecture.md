@@ -40,13 +40,15 @@ The UI and API use the same service layer. The UI does not run SQL queries direc
 - shared API error format;
 - health endpoint helper;
 - logging setup;
-- timezone-aware datetime helpers;
-- SQLAlchemy type for UTC datetimes;
+- timezone-aware and local-naive datetime helpers;
+- SQLAlchemy types for UTC-aware and local-naive datetimes;
 - shared UI application status block.
 
 ## Dates And Time
 
-All meaningful datetimes are accepted as timezone-aware values. SQLite stores them as UTC ISO strings through `shared.sqlalchemy_types.UTCDateTime`.
+Email and Todo datetimes are accepted as timezone-aware values. SQLite stores them as UTC ISO strings through `shared.sqlalchemy_types.UTCDateTime`.
+
+Calendar datetimes are intentionally local naive values. Calendar API and UI use values such as `2026-08-27T15:00:00` to mean 15:00 local time, without timezone offsets or UTC conversion. SQLite stores these calendar values as local ISO strings through `shared.sqlalchemy_types.LocalNaiveDateTime`.
 
 ## Database Initialization
 

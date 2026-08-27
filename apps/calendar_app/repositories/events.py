@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from apps.calendar_app.models import CalendarEvent, CalendarEventStatus
 from apps.calendar_app.schemas import CalendarEventCreate
-from shared.datetime import now_utc
+from shared.datetime import now_local_naive
 
 
 @dataclass(frozen=True)
@@ -32,7 +32,7 @@ class CalendarEventRepository:
             description=event.description,
             start_at=event.start_at,
             end_at=event.end_at,
-            timezone=event.timezone,
+            timezone="local",
             status=event.status.value,
             location=event.location,
             participants=[participant.model_dump() for participant in event.participants],
@@ -65,7 +65,6 @@ class CalendarEventRepository:
             "description",
             "start_at",
             "end_at",
-            "timezone",
             "status",
             "location",
             "participants",
@@ -81,7 +80,7 @@ class CalendarEventRepository:
                     for participant in value
                 ]
             setattr(db_event, field_name, value)
-        db_event.updated_at = now_utc()
+        db_event.updated_at = now_local_naive()
         self._session.flush()
         self._session.refresh(db_event)
         return db_event

@@ -1,7 +1,6 @@
 from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 import pytest
 from pydantic import ValidationError
@@ -11,7 +10,6 @@ from apps.calendar_app.database import Base, build_engine, build_session_factory
 from apps.calendar_app.models import CalendarEventStatus
 from apps.calendar_app.repositories import CalendarEventRepository, EventSearch
 from apps.calendar_app.schemas import CalendarEventCreate, Participant
-from shared.datetime import UTC
 
 
 @pytest.fixture
@@ -34,8 +32,8 @@ def event_payload(
     end_at: datetime | None = None,
     participants: list[Participant] | None = None,
 ) -> CalendarEventCreate:
-    start = start_at or datetime(2026, 8, 12, 14, 30, tzinfo=ZoneInfo("America/Chicago"))
-    end = end_at or datetime(2026, 8, 12, 15, 30, tzinfo=ZoneInfo("America/Chicago"))
+    start = start_at or datetime(2026, 8, 12, 14, 30)
+    end = end_at or datetime(2026, 8, 12, 15, 30)
     return CalendarEventCreate(
         title=title,
         description="Discuss training project",
@@ -58,13 +56,13 @@ def test_create_and_get_event(session: Session) -> None:
     assert found.title == "Meeting with Anna"
     assert found.status == CalendarEventStatus.CONFIRMED.value
     assert found.timezone == "local"
-    assert found.start_at.tzinfo == UTC
+    assert found.start_at.tzinfo is None
     assert found.participants == [{"name": "Anna", "email": "anna@example.test"}]
 
 
 def test_event_requires_end_after_start() -> None:
-    start = datetime(2026, 8, 12, 15, 30, tzinfo=ZoneInfo("America/Chicago"))
-    end = datetime(2026, 8, 12, 14, 30, tzinfo=ZoneInfo("America/Chicago"))
+    start = datetime(2026, 8, 12, 15, 30)
+    end = datetime(2026, 8, 12, 14, 30)
 
     with pytest.raises(ValidationError):
         event_payload(start_at=start, end_at=end)
@@ -94,16 +92,16 @@ def test_period_query_returns_overlapping_events(session: Session) -> None:
     repository.create(
         event_payload(
             title="Outside period",
-            start_at=datetime(2026, 9, 1, 9, 0, tzinfo=ZoneInfo("America/Chicago")),
-            end_at=datetime(2026, 9, 1, 10, 0, tzinfo=ZoneInfo("America/Chicago")),
+            start_at=datetime(2026, 9, 1, 9, 0),
+            end_at=datetime(2026, 9, 1, 10, 0),
         )
     )
     session.commit()
 
     results = repository.list(
         EventSearch(
-            starts_before=datetime(2026, 8, 13, 0, 0, tzinfo=ZoneInfo("America/Chicago")),
-            ends_after=datetime(2026, 8, 12, 0, 0, tzinfo=ZoneInfo("America/Chicago")),
+            starts_before=datetime(2026, 8, 13, 0, 0),
+            ends_after=datetime(2026, 8, 12, 0, 0),
         )
     )
 

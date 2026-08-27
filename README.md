@@ -10,7 +10,7 @@ The project is not a production system. It does not include real email delivery,
 
 - **Email app**: a fake local mailbox for creating, reading, searching, moving to trash, and deleting email-like messages.
 - **Todo App**: a local task tracker for creating tasks, changing status and priority, completing tasks, and archiving them.
-- **Calendar App**: a local calendar for creating events, changing schedules, cancelling/restoring events, deleting events, and checking overlaps.
+- **Calendar App**: a local calendar for creating events, changing schedules, cancelling/restoring events, deleting events, and checking overlaps. Calendar times are treated as local naive values without timezone conversion.
 
 ## Documentation
 

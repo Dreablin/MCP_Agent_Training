@@ -5,7 +5,8 @@ from datetime import datetime
 from apps.calendar_app.models import CalendarEventStatus
 from apps.calendar_app.repositories import CalendarEventRepository, EventSearch
 from apps.calendar_app.schemas import CalendarEventCreate, CalendarEventRead, CalendarEventUpdate
-from shared.errors import NotFoundError, ValidationAppError
+from shared.datetime import require_naive
+from shared.errors import ConflictError, NotFoundError, ValidationAppError
 
 
 class CalendarEventService:
@@ -13,6 +14,8 @@ class CalendarEventService:
         self._repository = repository
 
     def create(self, payload: CalendarEventCreate) -> CalendarEventRead:
+        if payload.status != CalendarEventStatus.CANCELLED:
+            self._ensure_no_active_overlap(payload.start_at, payload.end_at)
         return self._to_read_model(self._repository.create(payload))
 
     def list_events(self, search: EventSearch | None = None) -> list[CalendarEventRead]:
@@ -34,6 +37,12 @@ class CalendarEventService:
                 "Event end time must be later than start time",
                 details={"field": "end_at"},
             )
+        status = values.get("status", current.status)
+        if self._is_active_status(status) and isinstance(start_at, datetime) and isinstance(
+            end_at,
+            datetime,
+        ):
+            self._ensure_no_active_overlap(start_at, end_at, exclude_event_id=event_id)
         event = self._repository.update(event_id, values)
         if event is None:
             raise NotFoundError("Calendar event not found", details={"id": event_id})
@@ -60,6 +69,8 @@ class CalendarEventService:
         *,
         exclude_event_id: str | None = None,
     ) -> list[CalendarEventRead]:
+        start_at = self._require_local_datetime(start_at, "start_at")
+        end_at = self._require_local_datetime(end_at, "end_at")
         if end_at <= start_at:
             raise ValidationAppError(
                 "Range end time must be later than range start time",
@@ -80,3 +91,36 @@ class CalendarEventService:
     @staticmethod
     def _to_read_model(event: object) -> CalendarEventRead:
         return CalendarEventRead.model_validate(event)
+
+    @staticmethod
+    def _require_local_datetime(value: datetime, field_name: str) -> datetime:
+        try:
+            return require_naive(value, field_name)
+        except ValueError as exc:
+            raise ValidationAppError(str(exc), details={"field": field_name}) from exc
+
+    def _ensure_no_active_overlap(
+        self,
+        start_at: datetime,
+        end_at: datetime,
+        *,
+        exclude_event_id: str | None = None,
+    ) -> None:
+        overlapping_events = self.find_overlaps(
+            start_at,
+            end_at,
+            exclude_event_id=exclude_event_id,
+        )
+        if overlapping_events:
+            raise ConflictError(
+                "Calendar event overlaps with an existing event",
+                details={
+                    "conflicting_event_ids": [event.id for event in overlapping_events],
+                },
+            )
+
+    @staticmethod
+    def _is_active_status(status: object) -> bool:
+        if isinstance(status, CalendarEventStatus):
+            return status != CalendarEventStatus.CANCELLED
+        return status != CalendarEventStatus.CANCELLED.value

@@ -4,7 +4,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from apps.calendar_app.models import CalendarEventStatus
-from shared.datetime import get_timezone, require_aware
+from shared.datetime import require_naive
 
 
 def new_event_id() -> str:
@@ -29,7 +29,6 @@ class CalendarEventBase(BaseModel):
     description: str = Field(default="", max_length=20_000)
     start_at: datetime
     end_at: datetime
-    timezone: str = "local"
     status: CalendarEventStatus = CalendarEventStatus.CONFIRMED
     location: str = Field(default="", max_length=300)
     participants: list[Participant] = Field(default_factory=list)
@@ -37,15 +36,7 @@ class CalendarEventBase(BaseModel):
     @field_validator("start_at", "end_at")
     @classmethod
     def validate_datetime(cls, value: datetime) -> datetime:
-        return require_aware(value)
-
-    @field_validator("timezone")
-    @classmethod
-    def validate_timezone(cls, value: str) -> str:
-        if value == "local":
-            return value
-        get_timezone(value)
-        return value
+        return require_naive(value)
 
     @model_validator(mode="after")
     def validate_time_range(self) -> "CalendarEventBase":
@@ -64,7 +55,6 @@ class CalendarEventUpdate(BaseModel):
     description: str | None = Field(default=None, max_length=20_000)
     start_at: datetime | None = None
     end_at: datetime | None = None
-    timezone: str | None = None
     status: CalendarEventStatus | None = None
     location: str | None = Field(default=None, max_length=300)
     participants: list[Participant] | None = None
@@ -74,17 +64,7 @@ class CalendarEventUpdate(BaseModel):
     def validate_datetime(cls, value: datetime | None) -> datetime | None:
         if value is None:
             return None
-        return require_aware(value)
-
-    @field_validator("timezone")
-    @classmethod
-    def validate_timezone(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        if value == "local":
-            return value
-        get_timezone(value)
-        return value
+        return require_naive(value)
 
 
 class CalendarEventRead(CalendarEventBase):
