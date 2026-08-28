@@ -7,6 +7,7 @@ from typing import TypedDict
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
+from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy.orm import Session, sessionmaker
 
 from apps.calendar_app.database import session_scope
@@ -19,7 +20,7 @@ from apps.calendar_app.schemas import (
 )
 from apps.calendar_app.services import CalendarEventService
 from shared.datetime import require_naive
-from shared.errors import ConflictError
+from shared.errors import AppError, ConflictError
 
 
 class CalendarParticipantInfo(TypedDict):
@@ -149,7 +150,7 @@ def create_calendar_event_tool(
         description: str = "",
         participants: list[dict[str, str]] | None = None,
     ) -> CalendarEventInfo:
-        """Create a new calendar event with optional description and participants."""
+        """Create a new calendar event using local naive datetimes without timezone."""
         return create_calendar_event_with_service(
             session_factory,
             title=title,
@@ -174,7 +175,7 @@ def update_calendar_event_tool(
         location: str | None = None,
         participants: list[dict[str, str]] | None = None,
     ) -> CalendarEventInfo:
-        """Update an existing calendar event by ID."""
+        """Update an existing calendar event by ID using local naive datetimes."""
         return update_calendar_event_with_service(
             session_factory,
             event_id=event_id,
@@ -261,22 +262,27 @@ def create_calendar_event_with_service(
     description: str = "",
     participants: list[dict[str, str]] | None = None,
 ) -> CalendarEventInfo:
-    payload = CalendarEventCreate(
-        title=title,
-        description=description,
-        start_at=start_at,
-        end_at=end_at,
-        participants=[
-            Participant(name=participant["name"], email=participant["email"])
-            for participant in participants or []
-        ],
-    )
-
     try:
+        payload = CalendarEventCreate(
+            title=title,
+            description=description,
+            start_at=start_at,
+            end_at=end_at,
+            participants=[
+                Participant(name=participant["name"], email=participant["email"])
+                for participant in participants or []
+            ],
+        )
         with calendar_event_service_scope(session_factory) as service:
             created = service.create(payload)
     except ConflictError as exc:
         raise ToolError(format_calendar_conflict_error(exc)) from exc
+    except AppError as exc:
+        raise ToolError(format_app_error(exc)) from exc
+    except PydanticValidationError as exc:
+        raise ToolError(format_pydantic_validation_error(exc)) from exc
+    except ValueError as exc:
+        raise ToolError(format_validation_error(str(exc))) from exc
 
     return calendar_event_to_info(created)
 
@@ -312,13 +318,18 @@ def update_calendar_event_with_service(
         msg = "At least one event field must be provided"
         raise ValueError(msg)
 
-    payload = CalendarEventUpdate.model_validate(update_values)
-
     try:
+        payload = CalendarEventUpdate.model_validate(update_values)
         with calendar_event_service_scope(session_factory) as service:
             updated = service.update(event_id, payload)
     except ConflictError as exc:
         raise ToolError(format_calendar_conflict_error(exc)) from exc
+    except AppError as exc:
+        raise ToolError(format_app_error(exc)) from exc
+    except PydanticValidationError as exc:
+        raise ToolError(format_pydantic_validation_error(exc)) from exc
+    except ValueError as exc:
+        raise ToolError(format_validation_error(str(exc))) from exc
 
     return calendar_event_to_info(updated)
 
@@ -328,8 +339,11 @@ def cancel_calendar_event_with_service(
     *,
     event_id: str,
 ) -> CalendarEventInfo:
-    with calendar_event_service_scope(session_factory) as service:
-        cancelled = service.cancel(event_id)
+    try:
+        with calendar_event_service_scope(session_factory) as service:
+            cancelled = service.cancel(event_id)
+    except AppError as exc:
+        raise ToolError(format_app_error(exc)) from exc
 
     return calendar_event_to_info(cancelled)
 
@@ -368,6 +382,33 @@ def format_calendar_conflict_error(exc: ConflictError) -> str:
         f"{exc.code.value}: {exc.message}. "
         f"conflicting_event_ids={json.dumps(conflicting_event_ids)}"
     )
+
+
+def format_app_error(exc: AppError) -> str:
+    return (
+        f"{exc.code.value}: {exc.message}. "
+        f"details={json.dumps(exc.details, sort_keys=True)}"
+    )
+
+
+def format_pydantic_validation_error(exc: PydanticValidationError) -> str:
+    errors = []
+    for error in exc.errors():
+        errors.append(
+            {
+                "field": ".".join(str(part) for part in error["loc"]),
+                "message": error["msg"],
+                "type": error["type"],
+            }
+        )
+    return (
+        "VALIDATION_ERROR: Calendar tool input validation failed. "
+        f"details={json.dumps({'errors': errors}, sort_keys=True)}"
+    )
+
+
+def format_validation_error(message: str) -> str:
+    return f"VALIDATION_ERROR: {message}"
 
 
 def calendar_event_to_info(event: CalendarEventRead) -> CalendarEventInfo:

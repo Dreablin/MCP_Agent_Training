@@ -148,6 +148,25 @@ def test_create_calendar_event_tool_reports_overlap_conflict() -> None:
     assert f'conflicting_event_ids=["{existing["id"]}"]' in message
 
 
+def test_create_calendar_event_tool_reports_timezone_validation_error() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    session_factory: sessionmaker[Session] = sessionmaker(bind=engine, expire_on_commit=False)
+
+    with pytest.raises(ToolError) as exc_info:
+        create_calendar_event_with_service(
+            session_factory,
+            title="Planning",
+            start_at=datetime.fromisoformat("2026-08-28T14:30:00+00:00"),
+            end_at=datetime.fromisoformat("2026-08-28T15:30:00+00:00"),
+        )
+
+    message = str(exc_info.value)
+    assert "VALIDATION_ERROR: Calendar tool input validation failed." in message
+    assert '"field": "start_at"' in message
+    assert "must not include timezone information" in message
+
+
 def test_list_calendar_events_tool_returns_events_overlapping_range() -> None:
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)

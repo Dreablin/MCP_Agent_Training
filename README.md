@@ -63,7 +63,7 @@ Email app:    http://127.0.0.1:8011
 Email MCP:    http://127.0.0.1:8111/mcp
 Todo App:     http://127.0.0.1:8012
 Calendar App: http://127.0.0.1:8013
-Calendar MCP: http://127.0.0.1:8013/mcp
+Calendar MCP: http://127.0.0.1:8013/mcp/
 ```
 
 OpenAPI documentation is available at `/docs` in each application.
@@ -73,3 +73,48 @@ Todo MCP has no URL. It is launched by an MCP client over stdio, for example:
 ```bash
 python -m apps.todo_MCP.main
 ```
+
+## Agent Skeleton
+
+`apps/agent_app/` contains a LangGraph-based agent shell for coordinating the
+three MCP servers. The first implementation focuses on orchestration mechanics:
+
+- MCP tool discovery through Email HTTP MCP, Calendar HTTP MCP, and Todo stdio MCP;
+- an agent-local `get_current_datetime` tool for resolving relative dates and
+  times using this computer's local clock;
+- persistent graph checkpoints for pause/resume human-in-the-loop flows;
+- LangGraph-native message history, including AI tool calls and ToolMessage results;
+- a simple `LLM -> tools -> LLM` loop using standard LangGraph ToolNode execution;
+- a system prompt that tells the model to use MCP tools as the source of truth
+  and not claim action success before a successful tool result;
+- tool errors return to the LLM as `ToolMessage(status="error")` before any human
+  clarification is considered;
+- structured SQLite audit logging for runs, node events, tool calls, human
+  interrupts, and state snapshots.
+
+The default LLM provider is local Ollama with `AGENT_LLM_MODEL=gemma4:31b`.
+Supported provider values are `ollama` and `openai`. To switch to OpenAI, set
+`AGENT_LLM_PROVIDER=openai`, choose an OpenAI model in `AGENT_LLM_MODEL`, and
+set `AGENT_OPENAI_API_KEY` in `.env`.
+
+Tests use a scripted chat model and fake LangChain tools so the real graph loop,
+ToolMessage handling, and audit behavior can be verified without model
+credentials.
+
+`langgraph.json` exposes `apps.agent_app.studio:make_graph` for LangGraph Studio.
+That async context-manager entrypoint uses a lightweight fallback model by
+default so the graph can be loaded without credentials. Set
+`AGENT_STUDIO_USE_REAL_RUNTIME=true` to make the entrypoint load the configured
+LLM and persistent MCP tool registry when the local MCP apps are running. In real
+runtime mode, MCP tools are async-only, so use the async graph execution path.
+
+The single-thread interactive CLI can be started with:
+
+```bash
+python -m apps.agent_app.cli
+```
+
+After installing the project, the same CLI is also available as `agent-cli`. The
+CLI opens the MCP registry once, keeps one LangGraph thread for the session,
+streams LLM/tool/final updates for each command, and then waits for the next
+command.
