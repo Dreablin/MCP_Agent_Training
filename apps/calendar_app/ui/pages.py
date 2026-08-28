@@ -6,11 +6,11 @@ from nicegui import ui
 from nicegui.element import Element
 from sqlalchemy.orm import Session, sessionmaker
 
+from apps.calendar_app.command_runner import CalendarCommandRunner
 from apps.calendar_app.config import CalendarAppSettings
-from apps.calendar_app.database import session_scope
 from apps.calendar_app.events import CalendarEventBus
 from apps.calendar_app.models import CalendarEventStatus
-from apps.calendar_app.repositories import CalendarEventRepository, EventSearch
+from apps.calendar_app.repositories import EventSearch
 from apps.calendar_app.schemas import CalendarEventCreate, CalendarEventRead, Participant
 from apps.calendar_app.services import CalendarEventService
 from shared.errors import AppError, ErrorCode
@@ -35,16 +35,15 @@ def register_pages(
     settings: CalendarAppSettings,
     session_factory: sessionmaker[Session],
     event_bus: CalendarEventBus,
+    command_runner: CalendarCommandRunner | None = None,
 ) -> None:
+    resolved_command_runner = command_runner or CalendarCommandRunner(
+        session_factory,
+        event_bus,
+    )
+
     def run_with_service(action: Callable[[CalendarEventService], T]) -> T:
-        service: CalendarEventService | None = None
-        with session_scope(session_factory) as session:
-            service = CalendarEventService(CalendarEventRepository(session))
-            result = action(service)
-        assert service is not None
-        for event in service.pull_events():
-            event_bus.publish(event)
-        return result
+        return resolved_command_runner.run(action)
 
     def notify_error(exc: Exception) -> None:
         if isinstance(exc, AppError):

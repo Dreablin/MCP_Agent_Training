@@ -68,7 +68,8 @@ python -m apps.todo_MCP.main
 ```
 
 Todo MCP uses stdio for JSON-RPC. It has no URL and is normally launched by an
-MCP client as a child process, not by `scripts.run_all`.
+MCP client as a child process, not by `scripts.run_all`. It calls the Todo App at
+`http://127.0.0.1:8012` by default.
 
 ## Stop Applications
 

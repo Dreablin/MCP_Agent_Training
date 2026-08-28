@@ -6,7 +6,9 @@ from fastapi.testclient import TestClient
 
 from apps.todo_app.config import TodoAppSettings
 from apps.todo_app.database import Base
+from apps.todo_app.events import TaskEvent
 from apps.todo_app.main import create_app
+from apps.todo_app.models import TaskPriority, TaskStatus
 
 
 @pytest.fixture
@@ -48,6 +50,32 @@ def test_task_event_stream_is_exposed(client: TestClient) -> None:
 
     assert response.status_code == 200
     assert "/api/tasks/events" in response.json()["paths"]
+
+
+@pytest.mark.anyio
+async def test_task_api_publishes_mutation_to_event_bus(tmp_path: Path) -> None:
+    settings = TodoAppSettings(db_path=tmp_path / "todo.db")
+    app = create_app(settings, include_ui=False)
+    Base.metadata.create_all(app.state.engine)
+    subscription = app.state.task_event_bus.subscribe()
+
+    try:
+        with TestClient(app) as test_client:
+            response = test_client.post(
+                "/api/tasks",
+                json={"title": "Created through API", "priority": "high"},
+            )
+
+        assert response.status_code == 201
+        assert await subscription.get() == TaskEvent(
+            action="created",
+            task_id=response.json()["id"],
+            status=TaskStatus.OPEN,
+            priority=TaskPriority.HIGH,
+        )
+    finally:
+        app.state.task_event_bus.unsubscribe(subscription)
+        app.state.engine.dispose()
 
 
 def test_due_at_is_not_accepted_by_api(client: TestClient) -> None:

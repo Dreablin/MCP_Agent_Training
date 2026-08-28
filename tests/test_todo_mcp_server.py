@@ -1,31 +1,27 @@
-from pathlib import Path
+import json
+from typing import Any
 
+import httpx
 import pytest
 from mcp.server.mcpserver.exceptions import ToolError
-from sqlalchemy import create_engine, inspect
-from sqlalchemy.orm import Session, sessionmaker
 
-from apps.todo_app.config import TodoAppSettings
-from apps.todo_app.database import Base
-from apps.todo_app.models import Task, TaskPriority, TaskStatus  # noqa: F401
-from apps.todo_app.schemas import TaskCreate
+from apps.todo_app.models import TaskPriority, TaskStatus
+from apps.todo_MCP.config import TodoMCPSettings
 from apps.todo_MCP.main import create_runtime
 from apps.todo_MCP.server import create_mcp_server
 from apps.todo_MCP.tools import (
-    cancel_todo_task_with_service,
-    complete_todo_task_with_service,
-    create_todo_task_with_service,
-    list_todo_tasks_with_service,
-    todo_task_service_scope,
+    cancel_todo_task_via_api,
+    complete_todo_task_via_api,
+    create_todo_task_via_api,
+    list_todo_tasks_via_api,
+    validate_pagination,
 )
 
 
 @pytest.mark.anyio
 async def test_todo_mcp_server_registers_tools() -> None:
-    engine = create_engine("sqlite:///:memory:")
-    session_factory: sessionmaker[Session] = sessionmaker(bind=engine, expire_on_commit=False)
-
-    mcp = create_mcp_server(session_factory)
+    settings = TodoMCPSettings()
+    mcp = create_mcp_server(settings)
     tools = await mcp.list_tools()
     tools_by_name = {tool.name: tool for tool in tools}
 
@@ -61,210 +57,175 @@ async def test_todo_mcp_server_registers_tools() -> None:
     assert complete_tool.annotations.open_world_hint is False
 
 
-def test_todo_mcp_runtime_initializes_todo_database(tmp_path: Path) -> None:
-    settings = TodoAppSettings(db_path=tmp_path / "todo.db")
+def test_todo_mcp_runtime_does_not_open_todo_database() -> None:
+    settings = TodoMCPSettings(todo_api_port=8999)
 
     runtime = create_runtime(settings)
-    try:
-        assert settings.db_path.exists()
-        assert inspect(runtime.engine).has_table("tasks")
-        assert runtime.mcp.name == "Todo MCP server"
-    finally:
-        runtime.engine.dispose()
+
+    assert runtime.settings is settings
+    assert runtime.settings.todo_api_tasks_url == "http://127.0.0.1:8999/api/tasks"
+    assert not hasattr(runtime, "engine")
 
 
-def test_todo_mcp_service_scope_uses_session_factory_per_call() -> None:
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine)
-    session_factory: sessionmaker[Session] = sessionmaker(bind=engine, expire_on_commit=False)
+def test_todo_mcp_settings_build_api_url() -> None:
+    settings = TodoMCPSettings(
+        todo_api_scheme="https",
+        todo_api_host="todo.example.test",
+        todo_api_port=9443,
+        todo_api_tasks_path="/v1/tasks",
+    )
 
-    with todo_task_service_scope(session_factory) as service:
-        created = service.create(TaskCreate(title="Write Todo MCP skeleton"))
-
-    with todo_task_service_scope(session_factory) as service:
-        tasks = service.list()
-
-    assert [task.id for task in tasks] == [created.id]
+    assert settings.todo_api_base_url == "https://todo.example.test:9443"
+    assert settings.todo_api_tasks_url == "https://todo.example.test:9443/v1/tasks"
 
 
-def test_list_todo_tasks_tool_filters_by_status_and_priority() -> None:
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine)
-    session_factory: sessionmaker[Session] = sessionmaker(bind=engine, expire_on_commit=False)
+def test_list_todo_tasks_calls_todo_api() -> None:
+    requested: list[tuple[str, str, dict[str, str]]] = []
 
-    high = create_todo_task_with_service(
-        session_factory,
-        title="High open",
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append((request.method, request.url.path, dict(request.url.params)))
+        return httpx.Response(200, json=[task_payload("task-1", priority="high")])
+
+    tasks = list_todo_tasks_via_api(
+        TodoMCPSettings(),
+        status=TaskStatus.OPEN,
         priority=TaskPriority.HIGH,
-    )
-    normal = create_todo_task_with_service(
-        session_factory,
-        title="Normal open",
-        priority=TaskPriority.NORMAL,
-    )
-    completed = create_todo_task_with_service(
-        session_factory,
-        title="High completed",
-        priority=TaskPriority.HIGH,
-    )
-    with todo_task_service_scope(session_factory) as service:
-        service.complete(completed["id"])
-
-    high_tasks = list_todo_tasks_with_service(session_factory, priority=TaskPriority.HIGH)
-    open_tasks = list_todo_tasks_with_service(session_factory, status=TaskStatus.OPEN)
-    completed_high_tasks = list_todo_tasks_with_service(
-        session_factory,
-        status=TaskStatus.COMPLETED,
-        priority=TaskPriority.HIGH,
-    )
-    paged_tasks = list_todo_tasks_with_service(session_factory, limit=1, offset=1)
-
-    assert [task["id"] for task in high_tasks] == [completed["id"], high["id"]]
-    assert [task["id"] for task in open_tasks] == [normal["id"], high["id"]]
-    assert [task["id"] for task in completed_high_tasks] == [completed["id"]]
-    assert len(paged_tasks) == 1
-
-
-def test_list_todo_tasks_tool_validates_pagination() -> None:
-    engine = create_engine("sqlite:///:memory:")
-    session_factory: sessionmaker[Session] = sessionmaker(bind=engine, expire_on_commit=False)
-
-    with pytest.raises(ValueError, match="limit must be between 1 and 500"):
-        list_todo_tasks_with_service(session_factory, limit=0)
-    with pytest.raises(ValueError, match="offset must be greater than or equal to 0"):
-        list_todo_tasks_with_service(session_factory, offset=-1)
-
-
-def test_create_todo_task_tool_uses_service_layer() -> None:
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine)
-    session_factory: sessionmaker[Session] = sessionmaker(bind=engine, expire_on_commit=False)
-
-    task = create_todo_task_with_service(
-        session_factory,
-        title="Write first Todo MCP tool",
-        description="Create tasks through the service layer.",
-        priority=TaskPriority.HIGH,
+        limit=10,
+        offset=2,
+        transport=httpx.MockTransport(handler),
     )
 
-    assert task["title"] == "Write first Todo MCP tool"
-    assert task["description"] == "Create tasks through the service layer."
-    assert task["status"] == "open"
-    assert task["priority"] == "high"
-    assert task["completed_at"] is None
-    assert task["created_at"]
-    assert task["updated_at"]
-
-    with todo_task_service_scope(session_factory) as service:
-        stored = service.get(task["id"])
-
-    assert stored.title == "Write first Todo MCP tool"
-    assert stored.priority == TaskPriority.HIGH
+    assert requested == [
+        (
+            "GET",
+            "/api/tasks",
+            {"limit": "10", "offset": "2", "status": "open", "priority": "high"},
+        )
+    ]
+    assert tasks[0]["id"] == "task-1"
+    assert tasks[0]["priority"] == "high"
 
 
-def test_cancel_todo_task_tool_cancels_existing_task() -> None:
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine)
-    session_factory: sessionmaker[Session] = sessionmaker(bind=engine, expire_on_commit=False)
+def test_create_todo_task_calls_todo_api() -> None:
+    requested: list[tuple[str, str, dict[str, Any]]] = []
 
-    task = create_todo_task_with_service(
-        session_factory,
-        title="Cancel me",
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append((request.method, request.url.path, json.loads(request.content.decode())))
+        return httpx.Response(201, json=task_payload("task-1", title="New task"))
+
+    task = create_todo_task_via_api(
+        TodoMCPSettings(),
+        title="New task",
+        description="Task from MCP.",
+        priority=TaskPriority.URGENT,
+        transport=httpx.MockTransport(handler),
     )
 
-    cancelled = cancel_todo_task_with_service(session_factory, task_id=task["id"])
+    assert requested == [
+        (
+            "POST",
+            "/api/tasks",
+            {"title": "New task", "description": "Task from MCP.", "priority": "urgent"},
+        )
+    ]
+    assert task["id"] == "task-1"
+    assert task["title"] == "New task"
 
-    assert cancelled["id"] == task["id"]
+
+def test_cancel_todo_task_calls_get_then_api_and_preserves_idempotence() -> None:
+    requested: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append((request.method, request.url.path))
+        if request.method == "GET":
+            return httpx.Response(200, json=task_payload("task-1"))
+        return httpx.Response(200, json=task_payload("task-1", status="cancelled"))
+
+    cancelled = cancel_todo_task_via_api(
+        TodoMCPSettings(),
+        task_id="task-1",
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert requested == [("GET", "/api/tasks/task-1"), ("POST", "/api/tasks/task-1/cancel")]
     assert cancelled["status"] == "cancelled"
-    assert cancelled["completed_at"] is None
 
-    with todo_task_service_scope(session_factory) as service:
-        stored = service.get(task["id"])
-
-    assert stored.status.value == "cancelled"
-
-
-def test_cancel_todo_task_tool_is_idempotent() -> None:
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine)
-    session_factory: sessionmaker[Session] = sessionmaker(bind=engine, expire_on_commit=False)
-
-    task = create_todo_task_with_service(
-        session_factory,
-        title="Cancel me once",
+    requested.clear()
+    already_cancelled = cancel_todo_task_via_api(
+        TodoMCPSettings(),
+        task_id="task-1",
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                json=task_payload("task-1", status="cancelled"),
+            )
+        ),
     )
 
-    first_cancel = cancel_todo_task_with_service(session_factory, task_id=task["id"])
-    second_cancel = cancel_todo_task_with_service(session_factory, task_id=task["id"])
-
-    assert first_cancel["status"] == "cancelled"
-    assert second_cancel["status"] == "cancelled"
-    assert second_cancel["updated_at"] == first_cancel["updated_at"]
+    assert already_cancelled["status"] == "cancelled"
 
 
-def test_cancel_todo_task_tool_reports_missing_task() -> None:
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine)
-    session_factory: sessionmaker[Session] = sessionmaker(bind=engine, expire_on_commit=False)
+def test_complete_todo_task_calls_get_then_api() -> None:
+    requested: list[tuple[str, str]] = []
 
-    with pytest.raises(ToolError) as exc_info:
-        cancel_todo_task_with_service(session_factory, task_id="missing")
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append((request.method, request.url.path))
+        if request.method == "GET":
+            return httpx.Response(200, json=task_payload("task-1"))
+        return httpx.Response(200, json=task_payload("task-1", status="completed"))
 
-    message = str(exc_info.value)
-    assert "NOT_FOUND: Task not found." in message
-    assert 'details={"id": "missing"}' in message
-
-
-def test_complete_todo_task_tool_completes_existing_task() -> None:
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine)
-    session_factory: sessionmaker[Session] = sessionmaker(bind=engine, expire_on_commit=False)
-
-    task = create_todo_task_with_service(
-        session_factory,
-        title="Complete me",
+    completed = complete_todo_task_via_api(
+        TodoMCPSettings(),
+        task_id="task-1",
+        transport=httpx.MockTransport(handler),
     )
 
-    completed = complete_todo_task_with_service(session_factory, task_id=task["id"])
-
-    assert completed["id"] == task["id"]
+    assert requested == [("GET", "/api/tasks/task-1"), ("POST", "/api/tasks/task-1/complete")]
     assert completed["status"] == "completed"
-    assert completed["completed_at"] is not None
-
-    with todo_task_service_scope(session_factory) as service:
-        stored = service.get(task["id"])
-
-    assert stored.status.value == "completed"
-    assert stored.completed_at is not None
 
 
-def test_complete_todo_task_tool_is_idempotent() -> None:
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine)
-    session_factory: sessionmaker[Session] = sessionmaker(bind=engine, expire_on_commit=False)
+def test_todo_mcp_formats_todo_api_errors() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            404,
+            json={
+                "error": {
+                    "code": "NOT_FOUND",
+                    "message": "Task not found",
+                    "details": {"id": "missing"},
+                }
+            },
+        )
 
-    task = create_todo_task_with_service(
-        session_factory,
-        title="Complete me once",
-    )
-
-    first_complete = complete_todo_task_with_service(session_factory, task_id=task["id"])
-    second_complete = complete_todo_task_with_service(session_factory, task_id=task["id"])
-
-    assert first_complete["status"] == "completed"
-    assert second_complete["status"] == "completed"
-    assert second_complete["completed_at"] == first_complete["completed_at"]
-    assert second_complete["updated_at"] == first_complete["updated_at"]
+    with pytest.raises(ToolError, match=r'NOT_FOUND: Task not found\. details=\{"id": "missing"\}'):
+        complete_todo_task_via_api(
+            TodoMCPSettings(),
+            task_id="missing",
+            transport=httpx.MockTransport(handler),
+        )
 
 
-def test_complete_todo_task_tool_reports_missing_task() -> None:
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine)
-    session_factory: sessionmaker[Session] = sessionmaker(bind=engine, expire_on_commit=False)
+def test_todo_mcp_validates_pagination() -> None:
+    with pytest.raises(ValueError, match="limit must be between 1 and 500"):
+        validate_pagination(0, 0)
+    with pytest.raises(ValueError, match="offset must be greater than or equal to 0"):
+        validate_pagination(100, -1)
 
-    with pytest.raises(ToolError) as exc_info:
-        complete_todo_task_with_service(session_factory, task_id="missing")
 
-    message = str(exc_info.value)
-    assert "NOT_FOUND: Task not found." in message
-    assert 'details={"id": "missing"}' in message
+def task_payload(
+    task_id: str,
+    *,
+    title: str = "Task",
+    status: str = "open",
+    priority: str = "normal",
+) -> dict[str, object]:
+    return {
+        "id": task_id,
+        "title": title,
+        "description": "Description",
+        "status": status,
+        "priority": priority,
+        "completed_at": None,
+        "created_at": "2026-08-28T15:00:00+00:00",
+        "updated_at": "2026-08-28T15:00:00+00:00",
+    }

@@ -5,7 +5,12 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query, Request, Response, status
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 
-from apps.calendar_app.api.dependencies import get_calendar_event_bus, get_event_service
+from apps.calendar_app.api.dependencies import (
+    get_calendar_command_runner,
+    get_calendar_event_bus,
+    get_event_service,
+)
+from apps.calendar_app.command_runner import CalendarCommandRunner
 from apps.calendar_app.events import CalendarEventBus
 from apps.calendar_app.models import CalendarEventStatus
 from apps.calendar_app.repositories import EventSearch
@@ -20,9 +25,9 @@ router = APIRouter(prefix="/api/events", tags=["calendar events"])
 @router.post("", response_model=CalendarEventRead, status_code=status.HTTP_201_CREATED)
 def create_event(
     payload: CalendarEventCreate,
-    service: Annotated[CalendarEventService, Depends(get_event_service)],
+    command_runner: Annotated[CalendarCommandRunner, Depends(get_calendar_command_runner)],
 ) -> CalendarEventRead:
-    return service.create(payload)
+    return command_runner.run(lambda service: service.create(payload))
 
 
 @router.get("", response_model=list[CalendarEventRead])
@@ -92,33 +97,33 @@ def get_event(
 def update_event(
     event_id: str,
     payload: CalendarEventUpdate,
-    service: Annotated[CalendarEventService, Depends(get_event_service)],
+    command_runner: Annotated[CalendarCommandRunner, Depends(get_calendar_command_runner)],
 ) -> CalendarEventRead:
-    return service.update(event_id, payload)
+    return command_runner.run(lambda service: service.update(event_id, payload))
 
 
 @router.post("/{event_id}/cancel", response_model=CalendarEventRead)
 def cancel_event(
     event_id: str,
-    service: Annotated[CalendarEventService, Depends(get_event_service)],
+    command_runner: Annotated[CalendarCommandRunner, Depends(get_calendar_command_runner)],
 ) -> CalendarEventRead:
-    return service.cancel(event_id)
+    return command_runner.run(lambda service: service.cancel(event_id))
 
 
 @router.post("/{event_id}/restore", response_model=CalendarEventRead)
 def restore_event(
     event_id: str,
-    service: Annotated[CalendarEventService, Depends(get_event_service)],
+    command_runner: Annotated[CalendarCommandRunner, Depends(get_calendar_command_runner)],
 ) -> CalendarEventRead:
-    return service.restore(event_id)
+    return command_runner.run(lambda service: service.restore(event_id))
 
 
 @router.delete("/{event_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_event(
     event_id: str,
-    service: Annotated[CalendarEventService, Depends(get_event_service)],
+    command_runner: Annotated[CalendarCommandRunner, Depends(get_calendar_command_runner)],
 ) -> Response:
-    service.delete(event_id)
+    command_runner.run(lambda service: service.delete(event_id))
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

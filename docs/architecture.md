@@ -39,6 +39,7 @@ Calendar MCP endpoint
 
 Todo MCP stdio process
   -> MCPServer tools
+  -> Todo App REST API
   -> Todo service layer
   -> Todo repository layer
   -> Todo SQLite database
@@ -51,7 +52,7 @@ The UI and API use the same service layer. The UI does not run SQL queries direc
 - Email app uses `data/email.db`.
 - Email MCP server is a separate Uvicorn process. It does not connect to SQLite directly; future MCP tools should call the Email app REST API.
 - Todo App uses `data/todo.db`.
-- Todo MCP server is launched by an MCP client as a local stdio child process. It has no HTTP server, port, Uvicorn process, or FastAPI mount. Future tools should create a short-lived session per call and must not store a SQLAlchemy `Session` between MCP calls.
+- Todo MCP server is launched by an MCP client as a local stdio child process. It has no HTTP server, port, Uvicorn process, or FastAPI mount. Its tools call the Todo App REST API; it does not open the Todo SQLite database or create SQLAlchemy sessions.
 - Calendar App uses `data/calendar.db`.
 - Calendar MCP is mounted inside the Calendar App process and uses the same session factory as the Calendar API. Future tools should create a short-lived session per call and must not store a SQLAlchemy `Session` between MCP calls.
 - Business models are not moved into `shared`.

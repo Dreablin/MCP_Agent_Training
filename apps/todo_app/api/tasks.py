@@ -4,7 +4,12 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query, Request, status
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 
-from apps.todo_app.api.dependencies import get_task_event_bus, get_task_service
+from apps.todo_app.api.dependencies import (
+    get_task_command_runner,
+    get_task_event_bus,
+    get_task_service,
+)
+from apps.todo_app.command_runner import TaskCommandRunner
 from apps.todo_app.events import TaskEventBus
 from apps.todo_app.models import TaskPriority, TaskStatus
 from apps.todo_app.repositories import TaskSearch
@@ -17,9 +22,9 @@ router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 @router.post("", response_model=TaskRead, status_code=status.HTTP_201_CREATED)
 def create_task(
     payload: TaskCreate,
-    service: Annotated[TaskService, Depends(get_task_service)],
+    command_runner: Annotated[TaskCommandRunner, Depends(get_task_command_runner)],
 ) -> TaskRead:
-    return service.create(payload)
+    return command_runner.run(lambda service: service.create(payload))
 
 
 @router.get("", response_model=list[TaskRead])
@@ -71,30 +76,30 @@ def get_task(
 def update_task(
     task_id: str,
     payload: TaskUpdate,
-    service: Annotated[TaskService, Depends(get_task_service)],
+    command_runner: Annotated[TaskCommandRunner, Depends(get_task_command_runner)],
 ) -> TaskRead:
-    return service.update(task_id, payload)
+    return command_runner.run(lambda service: service.update(task_id, payload))
 
 
 @router.post("/{task_id}/complete", response_model=TaskRead)
 def complete_task(
     task_id: str,
-    service: Annotated[TaskService, Depends(get_task_service)],
+    command_runner: Annotated[TaskCommandRunner, Depends(get_task_command_runner)],
 ) -> TaskRead:
-    return service.complete(task_id)
+    return command_runner.run(lambda service: service.complete(task_id))
 
 
 @router.post("/{task_id}/reopen", response_model=TaskRead)
 def reopen_task(
     task_id: str,
-    service: Annotated[TaskService, Depends(get_task_service)],
+    command_runner: Annotated[TaskCommandRunner, Depends(get_task_command_runner)],
 ) -> TaskRead:
-    return service.reopen(task_id)
+    return command_runner.run(lambda service: service.reopen(task_id))
 
 
 @router.post("/{task_id}/cancel", response_model=TaskRead)
 def cancel_task(
     task_id: str,
-    service: Annotated[TaskService, Depends(get_task_service)],
+    command_runner: Annotated[TaskCommandRunner, Depends(get_task_command_runner)],
 ) -> TaskRead:
-    return service.cancel(task_id)
+    return command_runner.run(lambda service: service.cancel(task_id))
