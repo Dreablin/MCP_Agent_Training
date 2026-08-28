@@ -6,6 +6,7 @@ import pytest
 from sqlalchemy.orm import Session
 
 from apps.calendar_app.database import Base, build_engine, build_session_factory
+from apps.calendar_app.events import CalendarEvent
 from apps.calendar_app.models import CalendarEventStatus
 from apps.calendar_app.repositories import CalendarEventRepository
 from apps.calendar_app.schemas import CalendarEventCreate, CalendarEventUpdate, Participant
@@ -45,6 +46,39 @@ def test_service_cancel_and_restore(service: CalendarEventService) -> None:
 
     assert cancelled.status == CalendarEventStatus.CANCELLED
     assert restored.status == CalendarEventStatus.CONFIRMED
+
+
+def test_service_records_events_for_ui_auto_refresh(service: CalendarEventService) -> None:
+    created = service.create(event_payload())
+
+    assert service.pull_events() == [
+        CalendarEvent(
+            action="created",
+            event_id=created.id,
+            status=CalendarEventStatus.CONFIRMED,
+        )
+    ]
+
+    service.cancel(created.id)
+    assert service.pull_events() == [
+        CalendarEvent(
+            action="cancelled",
+            event_id=created.id,
+            status=CalendarEventStatus.CANCELLED,
+        )
+    ]
+
+    service.restore(created.id)
+    assert service.pull_events() == [
+        CalendarEvent(
+            action="restored",
+            event_id=created.id,
+            status=CalendarEventStatus.CONFIRMED,
+        )
+    ]
+
+    service.delete(created.id)
+    assert service.pull_events() == [CalendarEvent(action="deleted", event_id=created.id)]
 
 
 def test_service_rejects_invalid_reschedule(service: CalendarEventService) -> None:

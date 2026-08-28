@@ -43,6 +43,13 @@ def test_create_get_and_list_task(client: TestClient) -> None:
     assert len(list_response.json()) == 1
 
 
+def test_task_event_stream_is_exposed(client: TestClient) -> None:
+    response = client.get("/openapi.json")
+
+    assert response.status_code == 200
+    assert "/api/tasks/events" in response.json()["paths"]
+
+
 def test_due_at_is_not_accepted_by_api(client: TestClient) -> None:
     payload = api_payload()
     payload["due_at"] = "2026-08-12T13:00:00-05:00"

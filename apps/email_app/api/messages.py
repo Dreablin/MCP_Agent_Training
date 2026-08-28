@@ -1,8 +1,11 @@
+from collections.abc import AsyncIterator
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
+from fastapi.sse import EventSourceResponse, ServerSentEvent
 
-from apps.email_app.api.dependencies import get_email_service
+from apps.email_app.api.dependencies import get_email_event_bus, get_email_service
+from apps.email_app.events import EmailEventBus
 from apps.email_app.models import EmailFolder
 from apps.email_app.repositories import EmailSearch
 from apps.email_app.schemas import (
@@ -22,6 +25,14 @@ def create_message(
     service: Annotated[EmailMessageService, Depends(get_email_service)],
 ) -> EmailMessageRead:
     return service.create(payload)
+
+
+@router.post("/send", response_model=EmailMessageRead, status_code=status.HTTP_201_CREATED)
+def send_message(
+    payload: EmailMessageCreate,
+    service: Annotated[EmailMessageService, Depends(get_email_service)],
+) -> EmailMessageRead:
+    return service.create_sent(payload)
 
 
 @router.get("", response_model=list[EmailMessageRead])
@@ -60,6 +71,23 @@ def list_folders(
     service: Annotated[EmailMessageService, Depends(get_email_service)],
 ) -> list[EmailFolderRead]:
     return service.list_folders()
+
+
+@router.get("/events", response_class=EventSourceResponse)
+async def stream_message_events(
+    request: Request,
+    event_bus: Annotated[EmailEventBus, Depends(get_email_event_bus)],
+) -> AsyncIterator[ServerSentEvent]:
+    subscription = event_bus.subscribe()
+    try:
+        yield ServerSentEvent(event="connected", data={"status": "ok"})
+        while True:
+            event = await subscription.get()
+            if await request.is_disconnected():
+                break
+            yield ServerSentEvent(event="messages_changed", data=event.as_dict())
+    finally:
+        event_bus.unsubscribe(subscription)
 
 
 @router.get("/{message_id}", response_model=EmailMessageRead)

@@ -3,15 +3,17 @@ from datetime import date, datetime, time, timedelta
 from typing import TypeVar
 
 from nicegui import ui
+from nicegui.element import Element
 from sqlalchemy.orm import Session, sessionmaker
 
 from apps.calendar_app.config import CalendarAppSettings
 from apps.calendar_app.database import session_scope
+from apps.calendar_app.events import CalendarEventBus
 from apps.calendar_app.models import CalendarEventStatus
 from apps.calendar_app.repositories import CalendarEventRepository, EventSearch
 from apps.calendar_app.schemas import CalendarEventCreate, CalendarEventRead, Participant
 from apps.calendar_app.services import CalendarEventService
-from shared.errors import AppError
+from shared.errors import AppError, ErrorCode
 
 T = TypeVar("T")
 
@@ -29,11 +31,20 @@ HOUR_END = 22
 HOUR_HEIGHT = 72
 
 
-def register_pages(settings: CalendarAppSettings, session_factory: sessionmaker[Session]) -> None:
+def register_pages(
+    settings: CalendarAppSettings,
+    session_factory: sessionmaker[Session],
+    event_bus: CalendarEventBus,
+) -> None:
     def run_with_service(action: Callable[[CalendarEventService], T]) -> T:
+        service: CalendarEventService | None = None
         with session_scope(session_factory) as session:
             service = CalendarEventService(CalendarEventRepository(session))
-            return action(service)
+            result = action(service)
+        assert service is not None
+        for event in service.pull_events():
+            event_bus.publish(event)
+        return result
 
     def notify_error(exc: Exception) -> None:
         if isinstance(exc, AppError):
@@ -47,6 +58,9 @@ def register_pages(settings: CalendarAppSettings, session_factory: sessionmaker[
         week_start = today - timedelta(days=today.weekday())
         selected_event_id: str | None = None
         selected_event_status = CalendarEventStatus.CONFIRMED
+        current_view = "calendar"
+        titlebar_container: Element | None = None
+        grid_container: Element | None = None
         last_action = "Calendar is ready."
 
         ui.add_head_html(
@@ -410,7 +424,8 @@ def register_pages(settings: CalendarAppSettings, session_factory: sessionmaker[
         def refresh_calendar(message: str | None = None) -> None:
             if message is not None:
                 set_last_action(message, notify=False)
-            render_calendar()
+            if current_view == "calendar":
+                refresh_calendar_content()
 
         def parse_date_input(value: object) -> date:
             raw_value = str(value or "").strip()
@@ -489,7 +504,6 @@ def register_pages(settings: CalendarAppSettings, session_factory: sessionmaker[
                 notify_error(exc)
                 return
 
-            event_dialog.close()
             refresh_calendar(success)
             ui.notify(success, type="positive")
 
@@ -532,7 +546,27 @@ def register_pages(settings: CalendarAppSettings, session_factory: sessionmaker[
             refresh_calendar("Event deleted.")
             ui.notify("Event deleted.", type="positive")
 
-        def open_event(event: CalendarEventRead) -> None:
+        def update_event_action_buttons(event: CalendarEventRead) -> None:
+            event_status_button.enable()
+            event_delete_button.enable()
+            if event.status == CalendarEventStatus.CANCELLED:
+                event_status_button.text = "Restore"
+                event_status_button.props("icon=restore outline")
+            else:
+                event_status_button.text = "Cancel event"
+                event_status_button.props("icon=event_busy outline")
+
+        def show_deleted_event_dialog_state() -> None:
+            nonlocal selected_event_status
+            selected_event_status = CalendarEventStatus.CANCELLED
+            event_status_label.text = "Status: deleted"
+            event_location_label.text = "Location: not available"
+            event_participants_label.text = "Participants: not available"
+            event_description_label.text = "This event no longer exists."
+            event_status_button.disable()
+            event_delete_button.disable()
+
+        def update_event_dialog_content(event: CalendarEventRead) -> None:
             nonlocal selected_event_id, selected_event_status
             selected_event_id = event.id
             selected_event_status = event.status
@@ -545,12 +579,25 @@ def register_pages(settings: CalendarAppSettings, session_factory: sessionmaker[
             event_location_label.text = f"Location: {event.location or 'not specified'}"
             event_participants_label.text = f"Participants: {participants or 'none'}"
             event_description_label.text = event.description or "No description"
-            if event.status == CalendarEventStatus.CANCELLED:
-                event_status_button.text = "Restore"
-                event_status_button.props("icon=restore outline")
-            else:
-                event_status_button.text = "Cancel event"
-                event_status_button.props("icon=event_busy outline")
+            update_event_action_buttons(event)
+
+        def refresh_selected_event_dialog() -> None:
+            if selected_event_id is None:
+                return
+
+            try:
+                event = run_with_service(lambda service: service.get(selected_event_id))
+            except Exception as exc:
+                if isinstance(exc, AppError) and exc.code == ErrorCode.NOT_FOUND:
+                    show_deleted_event_dialog_state()
+                    return
+                notify_error(exc)
+                return
+
+            update_event_dialog_content(event)
+
+        def open_event(event: CalendarEventRead) -> None:
+            update_event_dialog_content(event)
             event_dialog.open()
 
         def render_time_axis() -> None:
@@ -582,43 +629,64 @@ def register_pages(settings: CalendarAppSettings, session_factory: sessionmaker[
                         if event.location:
                             ui.label(event.location).classes("event-meta")
 
-        def render_calendar() -> None:
+        def render_titlebar_content(events: list[CalendarEventRead]) -> None:
+            if titlebar_container is None:
+                return
+
+            start, end = week_bounds()
+            titlebar_container.clear()
+            with titlebar_container:
+                with ui.column().classes("gap-0"):
+                    ui.label("Calendar").classes("calendar-week-title")
+                    week_end = end - timedelta(days=1)
+                    ui.label(f"{start:%d.%m.%Y} - {week_end:%d.%m.%Y}").classes(
+                        "calendar-week-meta",
+                    )
+                ui.label(f"{len(events)} events this week").classes("calendar-week-meta")
+
+        def render_grid_content(events: list[CalendarEventRead]) -> None:
+            if grid_container is None:
+                return
+
+            grid_container.clear()
+            with grid_container:
+                with ui.element("div").classes("week-header"):
+                    ui.element("div").classes("time-gutter-header")
+                    for day in week_days():
+                        today_class = " today" if day == today else ""
+                        with ui.column().classes(f"day-header{today_class}"):
+                            ui.label(str(day.day)).classes("day-number")
+                            ui.label(DAY_LABELS[day.weekday()]).classes("day-name")
+
+                with ui.element("div").classes("week-body"):
+                    render_time_axis()
+                    for day in week_days():
+                        render_day_column(events, day)
+
+        def refresh_calendar_content() -> None:
             try:
                 events = fetch_week_events()
             except Exception as exc:
                 notify_error(exc)
                 return
 
-            start, end = week_bounds()
+            render_titlebar_content(events)
+            render_grid_content(events)
+            refresh_selected_event_dialog()
+
+        def render_calendar() -> None:
+            nonlocal current_view, titlebar_container, grid_container
+            current_view = "calendar"
             main_container.clear()
             with main_container, ui.column().classes("calendar-view"):
-                with ui.row().classes("calendar-titlebar"):
-                    with ui.column().classes("gap-0"):
-                        ui.label("Calendar").classes("calendar-week-title")
-                        week_end = end - timedelta(days=1)
-                        ui.label(f"{start:%d.%m.%Y} - {week_end:%d.%m.%Y}").classes(
-                            "calendar-week-meta",
-                        )
-                    ui.label(f"{len(events)} events this week").classes("calendar-week-meta")
-
-                with (
-                    ui.element("div").classes("calendar-scroll"),
-                    ui.element("div").classes("calendar-grid"),
-                ):
-                        with ui.element("div").classes("week-header"):
-                            ui.element("div").classes("time-gutter-header")
-                            for day in week_days():
-                                today_class = " today" if day == today else ""
-                                with ui.column().classes(f"day-header{today_class}"):
-                                    ui.label(str(day.day)).classes("day-number")
-                                    ui.label(DAY_LABELS[day.weekday()]).classes("day-name")
-
-                        with ui.element("div").classes("week-body"):
-                            render_time_axis()
-                            for day in week_days():
-                                render_day_column(events, day)
+                titlebar_container = ui.row().classes("calendar-titlebar")
+                with ui.element("div").classes("calendar-scroll"):
+                    grid_container = ui.element("div").classes("calendar-grid")
+            refresh_calendar_content()
 
         def render_info() -> None:
+            nonlocal current_view
+            current_view = "info"
             main_container.clear()
             with main_container, ui.column().classes("info-view"):
                 with ui.card().classes("w-full max-w-xl"):
@@ -667,7 +735,7 @@ def register_pages(settings: CalendarAppSettings, session_factory: sessionmaker[
                     icon="event_busy",
                     on_click=toggle_selected_event_status,
                 ).props("outline")
-                ui.button(
+                event_delete_button = ui.button(
                     "Delete",
                     icon="delete",
                     on_click=ask_delete_selected_event,
@@ -700,4 +768,20 @@ def register_pages(settings: CalendarAppSettings, session_factory: sessionmaker[
 
             main_container = ui.element("main").classes("calendar-main")
 
+        ui.on("calendar-events-changed", lambda: refresh_calendar())
+        ui.run_javascript(
+            """
+            (() => {
+                if (window.calendarAppEventSource) {
+                    window.calendarAppEventSource.close();
+                }
+                const source = new EventSource('/api/events/events');
+                source.addEventListener('events_changed', () => {
+                    emitEvent('calendarEventsChanged');
+                });
+                window.addEventListener('beforeunload', () => source.close(), { once: true });
+                window.calendarAppEventSource = source;
+            })();
+            """
+        )
         render_calendar()

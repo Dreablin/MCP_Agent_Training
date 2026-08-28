@@ -115,6 +115,30 @@ Response:
 
 - `200 OK`: array of Task objects.
 
+### `GET /api/tasks/events`
+
+Stream task changes as Server-Sent Events.
+
+Events:
+
+- `connected`: emitted when the stream is opened.
+- `tasks_changed`: emitted after task create, update, complete, reopen, or cancel operations.
+
+`tasks_changed` data:
+
+```json
+{
+  "action": "completed",
+  "task_id": "00000000-0000-4000-8000-000000000201",
+  "status": "completed",
+  "priority": "high"
+}
+```
+
+Response:
+
+- `200 OK`: SSE stream.
+
 ### `GET /api/tasks/{task_id}`
 
 Get a task by ID.

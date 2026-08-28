@@ -1,9 +1,11 @@
 from collections.abc import Generator
+from typing import cast
 
 from fastapi import Request
 from sqlalchemy.orm import Session, sessionmaker
 
 from apps.todo_app.database import session_scope
+from apps.todo_app.events import TaskEventBus
 from apps.todo_app.repositories import TaskRepository
 from apps.todo_app.services import TaskService
 
@@ -16,5 +18,15 @@ def get_session(request: Request) -> Generator[Session]:
 
 def get_task_service(request: Request) -> Generator[TaskService]:
     session_factory: sessionmaker[Session] = request.app.state.session_factory
+    event_bus: TaskEventBus = request.app.state.task_event_bus
+    service: TaskService | None = None
     with session_scope(session_factory) as session:
-        yield TaskService(TaskRepository(session))
+        service = TaskService(TaskRepository(session))
+        yield service
+    assert service is not None
+    for event in service.pull_events():
+        event_bus.publish(event)
+
+
+def get_task_event_bus(request: Request) -> TaskEventBus:
+    return cast(TaskEventBus, request.app.state.task_event_bus)

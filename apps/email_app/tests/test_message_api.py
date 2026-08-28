@@ -65,6 +65,20 @@ def test_create_get_and_list_message(client: TestClient) -> None:
     assert len(list_response.json()) == 1
 
 
+def test_send_message_creates_read_sent_message(client: TestClient) -> None:
+    response = client.post("/api/messages/send", json=api_payload("Project update"))
+
+    created = response.json()
+    sent_response = client.get("/api/messages", params={"folder": "sent"})
+    inbox_response = client.get("/api/messages", params={"folder": "inbox"})
+
+    assert response.status_code == 201
+    assert created["folder"] == "sent"
+    assert created["is_read"] is True
+    assert [message["id"] for message in sent_response.json()] == [created["id"]]
+    assert inbox_response.json() == []
+
+
 def test_search_and_filter_messages(client: TestClient) -> None:
     first = create_message(client, "Meeting with Anna")
     second = create_message(client, "Weekly report")
