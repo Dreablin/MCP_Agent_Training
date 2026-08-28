@@ -2,10 +2,12 @@ from collections.abc import Callable
 from typing import TypeVar
 
 from nicegui import ui
+from nicegui.element import Element
 from sqlalchemy.orm import Session, sessionmaker
 
 from apps.email_app.config import EmailAppSettings
 from apps.email_app.database import session_scope
+from apps.email_app.events import EmailEventBus
 from apps.email_app.models import EmailFolder
 from apps.email_app.repositories import EmailMessageRepository, EmailSearch
 from apps.email_app.schemas import EmailMessageCreate, EmailMessageRead
@@ -51,11 +53,17 @@ LOCAL_SENDER_EMAIL = "me@example.test"
 def register_pages(
     settings: EmailAppSettings,
     session_factory: sessionmaker[Session],
+    event_bus: EmailEventBus,
 ) -> None:
     def run_with_service(action: Callable[[EmailMessageService], T]) -> T:
+        service: EmailMessageService | None = None
         with session_scope(session_factory) as session:
             service = EmailMessageService(EmailMessageRepository(session))
-            return action(service)
+            result = action(service)
+        assert service is not None
+        for event in service.pull_events():
+            event_bus.publish(event)
+        return result
 
     def notify_error(exc: Exception) -> None:
         if isinstance(exc, AppError):
@@ -68,6 +76,10 @@ def register_pages(
         selected_folder = EmailFolder.INBOX
         selected_message_id: str | None = None
         pending_delete_message_id: str | None = None
+        current_view = "mail"
+        folder_container: Element | None = None
+        message_container: Element | None = None
+        reader_container: Element | None = None
         last_action = "Mail is ready."
 
         ui.add_head_html(
@@ -366,7 +378,8 @@ def register_pages(
             return compact_body[:120] + ("..." if len(compact_body) > 120 else "")
 
         def show_placeholder(title: str, details: str) -> None:
-            nonlocal last_action
+            nonlocal current_view, last_action
+            current_view = "placeholder"
             last_action = details
             ui.notify(details)
             render_placeholder(title, details)
@@ -513,58 +526,62 @@ def register_pages(
                 ui.label(message.subject).classes("message-subject text-sm")
                 ui.label(preview_text(message)).classes("message-preview text-xs")
 
-        def render_reader(message: EmailMessageRead | None) -> None:
-            with ui.column().classes("reader-pane"):
-                if message is None:
-                    with ui.column().classes("empty-state"):
-                        ui.icon("mail", size="40px").classes("text-grey-5")
-                        ui.label("Select a message").classes("text-subtitle1")
-                        ui.label("The selected message will appear here.").classes(
-                            "text-caption"
-                        )
-                    return
+        def render_reader_content(message: EmailMessageRead | None) -> None:
+            if message is None:
+                with ui.column().classes("empty-state"):
+                    ui.icon("mail", size="40px").classes("text-grey-5")
+                    ui.label("Select a message").classes("text-subtitle1")
+                    ui.label("The selected message will appear here.").classes("text-caption")
+                return
 
-                with ui.column().classes("reader-header"):
-                    with ui.row().classes("reader-actions"):
-                        if message.is_read:
-                            ui.button(
-                                "Mark unread",
-                                icon="mark_email_unread",
-                                on_click=lambda message_id=message.id: set_message_read(
-                                    message_id,
-                                    False,
-                                ),
-                            ).props("outline")
-                        else:
-                            ui.button(
-                                "Mark read",
-                                icon="done",
-                                on_click=lambda message_id=message.id: set_message_read(
-                                    message_id,
-                                    True,
-                                ),
-                            ).props("unelevated")
+            with ui.column().classes("reader-header"):
+                with ui.row().classes("reader-actions"):
+                    if message.is_read:
                         ui.button(
-                            "Delete",
-                            icon="delete",
-                            on_click=lambda message_id=message.id, subject=message.subject: (
-                                ask_delete_message(message_id, subject)
+                            "Mark unread",
+                            icon="mark_email_unread",
+                            on_click=lambda message_id=message.id: set_message_read(
+                                message_id,
+                                False,
                             ),
-                        ).props("outline color=negative")
-                    ui.label(message.subject).classes("text-h6")
-                    status_label = "Read" if message.is_read else "Unread"
-                    status_class = "reader-status" if message.is_read else "reader-status unread"
-                    ui.label(status_label).classes(status_class)
-                    ui.label(f"From: {message.sender_name} <{message.sender_email}>").classes(
-                        "reader-meta text-sm"
-                    )
-                    ui.label(f"To: {message.recipient_email}").classes("reader-meta text-sm")
-                    ui.label(f"Date: {format_date(message)}").classes("reader-meta text-sm")
-                with ui.column().classes("reader-body"):
-                    ui.label(message.body)
+                        ).props("outline")
+                    else:
+                        ui.button(
+                            "Mark read",
+                            icon="done",
+                            on_click=lambda message_id=message.id: set_message_read(
+                                message_id,
+                                True,
+                            ),
+                        ).props("unelevated")
+                    ui.button(
+                        "Delete",
+                        icon="delete",
+                        on_click=lambda message_id=message.id, subject=message.subject: (
+                            ask_delete_message(message_id, subject)
+                        ),
+                    ).props("outline color=negative")
+                ui.label(message.subject).classes("text-h6")
+                status_label = "Read" if message.is_read else "Unread"
+                status_class = "reader-status" if message.is_read else "reader-status unread"
+                ui.label(status_label).classes(status_class)
+                ui.label(f"From: {message.sender_name} <{message.sender_email}>").classes(
+                    "reader-meta text-sm"
+                )
+                ui.label(f"To: {message.recipient_email}").classes("reader-meta text-sm")
+                ui.label(f"Date: {format_date(message)}").classes("reader-meta text-sm")
+            with ui.column().classes("reader-body"):
+                ui.label(message.body)
 
-        def render_mail() -> None:
+        def refresh_mail_content() -> None:
             nonlocal selected_message_id
+            if (
+                folder_container is None
+                or message_container is None
+                or reader_container is None
+            ):
+                return
+
             try:
                 folder_messages = {folder: list_messages(folder) for folder in FOLDER_LABELS}
             except Exception as exc:
@@ -580,34 +597,50 @@ def register_pages(
                 None,
             )
 
+            folder_container.clear()
+            with folder_container:
+                ui.label(settings.app_name).classes("text-subtitle1 text-weight-bold")
+                ui.label("Folders").classes("text-caption text-grey-7")
+                for folder in FOLDER_ORDER:
+                    if folder is None:
+                        ui.separator().classes("folder-separator")
+                    else:
+                        render_folder_button(folder, len(folder_messages[folder]))
+
+            message_container.clear()
+            with message_container:
+                with ui.column().classes("message-pane-header"):
+                    ui.label(FOLDER_LABELS[selected_folder]).classes("text-subtitle1")
+                    ui.label(f"{len(messages)} messages").classes("text-caption text-grey-7")
+
+                with ui.column().classes("message-list"):
+                    if not messages:
+                        with ui.column().classes("empty-state"):
+                            ui.icon("mark_email_unread", size="36px").classes("text-grey-5")
+                            ui.label("There are no messages in this folder.").classes(
+                                "text-caption"
+                            )
+                    else:
+                        for message in messages:
+                            render_message_row(message)
+
+            reader_container.clear()
+            with reader_container:
+                render_reader_content(selected_message)
+
+        def refresh_mail_from_event() -> None:
+            if current_view == "mail":
+                refresh_mail_content()
+
+        def render_mail() -> None:
+            nonlocal current_view, folder_container, message_container, reader_container
+            current_view = "mail"
             main_container.clear()
             with main_container, ui.row().classes("email-workspace"):
-                with ui.column().classes("folder-pane"):
-                    ui.label(settings.app_name).classes("text-subtitle1 text-weight-bold")
-                    ui.label("Folders").classes("text-caption text-grey-7")
-                    for folder in FOLDER_ORDER:
-                        if folder is None:
-                            ui.separator().classes("folder-separator")
-                        else:
-                            render_folder_button(folder, len(folder_messages[folder]))
-
-                with ui.column().classes("message-pane"):
-                    with ui.column().classes("message-pane-header"):
-                        ui.label(FOLDER_LABELS[selected_folder]).classes("text-subtitle1")
-                        ui.label(f"{len(messages)} messages").classes("text-caption text-grey-7")
-
-                    with ui.column().classes("message-list"):
-                        if not messages:
-                            with ui.column().classes("empty-state"):
-                                ui.icon("mark_email_unread", size="36px").classes("text-grey-5")
-                                ui.label("There are no messages in this folder.").classes(
-                                    "text-caption"
-                                )
-                        else:
-                            for message in messages:
-                                render_message_row(message)
-
-                render_reader(selected_message)
+                folder_container = ui.column().classes("folder-pane")
+                message_container = ui.column().classes("message-pane")
+                reader_container = ui.column().classes("reader-pane")
+            refresh_mail_content()
 
         def render_placeholder(title: str, details: str) -> None:
             main_container.clear()
@@ -617,6 +650,8 @@ def register_pages(
                 ui.label(details).classes("text-body2")
 
         def render_info() -> None:
+            nonlocal current_view
+            current_view = "info"
             main_container.clear()
             with main_container, ui.column().classes("info-view"):
                 render_app_status(
@@ -691,4 +726,20 @@ def register_pages(
 
             main_container = ui.element("main").classes("email-main")
 
+        ui.on("email-messages-changed", lambda: refresh_mail_from_event())
+        ui.run_javascript(
+            """
+            (() => {
+                if (window.emailAppEventSource) {
+                    window.emailAppEventSource.close();
+                }
+                const source = new EventSource('/api/messages/events');
+                source.addEventListener('messages_changed', () => {
+                    emitEvent('emailMessagesChanged');
+                });
+                window.addEventListener('beforeunload', () => source.close(), { once: true });
+                window.emailAppEventSource = source;
+            })();
+            """
+        )
         render_mail()
