@@ -24,6 +24,14 @@ def create_message(
     return service.create(payload)
 
 
+@router.post("/send", response_model=EmailMessageRead, status_code=status.HTTP_201_CREATED)
+def send_message(
+    payload: EmailMessageCreate,
+    service: Annotated[EmailMessageService, Depends(get_email_service)],
+) -> EmailMessageRead:
+    return service.create_sent(payload)
+
+
 @router.get("", response_model=list[EmailMessageRead])
 def list_messages(
     service: Annotated[EmailMessageService, Depends(get_email_service)],

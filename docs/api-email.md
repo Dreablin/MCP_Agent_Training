@@ -94,6 +94,33 @@ Response:
 - `201 Created`
 - body: Email Message.
 
+### `POST /api/messages/send`
+
+Create a sent email message. The created message is stored in `sent` and marked
+as read immediately.
+
+Request body:
+
+```json
+{
+  "sender_name": "Email app",
+  "sender_email": "me@example.test",
+  "recipient_email": "anna@example.test",
+  "subject": "Project update",
+  "body": "The project update is ready.",
+  "received_at": "2026-08-06T10:00:00-05:00"
+}
+```
+
+Optional field:
+
+- `id`: UUID string.
+
+Response:
+
+- `201 Created`
+- body: Email Message with `folder = "sent"` and `is_read = true`.
+
 ### `GET /api/messages`
 
 Get a list of messages. Results are ordered by `received_at` ascending, so the oldest
