@@ -776,6 +776,9 @@ def register_pages(
                     window.calendarAppEventSource.close();
                 }
                 const source = new EventSource('/api/events/events');
+                source.addEventListener('connected', () => {
+                    emitEvent('calendarEventsChanged');
+                });
                 source.addEventListener('events_changed', () => {
                     emitEvent('calendarEventsChanged');
                 });
