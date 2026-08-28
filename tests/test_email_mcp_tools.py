@@ -12,6 +12,7 @@ from apps.email_MCP.tools import (
     move_email_to_folder_in_api,
     parse_email_folders_response,
     parse_email_messages_response,
+    send_email_via_api,
 )
 
 
@@ -68,6 +69,21 @@ async def test_move_email_to_folder_tool_has_annotations() -> None:
     assert tool.annotations.read_only_hint is False
     assert tool.annotations.destructive_hint is False
     assert tool.annotations.idempotent_hint is True
+    assert tool.annotations.open_world_hint is False
+
+
+@pytest.mark.anyio
+async def test_send_email_tool_has_annotations() -> None:
+    mcp = create_mcp_server(EmailMCPSettings())
+    tools = await mcp.list_tools()
+
+    tool = next(tool for tool in tools if tool.name == "send_email")
+
+    assert tool.title == "Send email"
+    assert tool.annotations is not None
+    assert tool.annotations.read_only_hint is False
+    assert tool.annotations.destructive_hint is False
+    assert tool.annotations.idempotent_hint is False
     assert tool.annotations.open_world_hint is False
 
 
@@ -180,6 +196,64 @@ async def test_move_email_to_folder_calls_email_api() -> None:
     ]
     assert message["id"] == "message-id"
     assert message["folder"] == "work"
+
+
+@pytest.mark.anyio
+async def test_send_email_creates_message_and_moves_it_to_sent() -> None:
+    requested_methods_urls_and_bodies: list[tuple[str, str, dict[str, object]]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode())
+        requested_methods_urls_and_bodies.append((request.method, str(request.url), body))
+        if request.method == "POST" and str(request.url) == settings.email_api_messages_url:
+            return httpx.Response(
+                201,
+                json=email_message_payload(
+                    "sent-message-id",
+                    folder="inbox",
+                    is_read=False,
+                ),
+            )
+        return httpx.Response(
+            200,
+            json=email_message_payload(
+                "sent-message-id",
+                folder="sent",
+                is_read=False,
+            ),
+        )
+
+    settings = EmailMCPSettings()
+    message = await send_email_via_api(
+        settings,
+        sender_name="Dmitry",
+        sender_email="dmitry@example.test",
+        recipient_email="anna@example.test",
+        subject="Project update",
+        body="Hello from MCP.",
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert requested_methods_urls_and_bodies == [
+        (
+            "POST",
+            "http://127.0.0.1:8011/api/messages",
+            {
+                "sender_name": "Dmitry",
+                "sender_email": "dmitry@example.test",
+                "recipient_email": "anna@example.test",
+                "subject": "Project update",
+                "body": "Hello from MCP.",
+            },
+        ),
+        (
+            "POST",
+            "http://127.0.0.1:8011/api/messages/sent-message-id/move",
+            {"folder": "sent"},
+        ),
+    ]
+    assert message["id"] == "sent-message-id"
+    assert message["folder"] == "sent"
 
 
 def test_parse_email_folders_response_rejects_invalid_payload() -> None:

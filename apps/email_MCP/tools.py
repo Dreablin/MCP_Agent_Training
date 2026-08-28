@@ -68,6 +68,17 @@ def register_tools(mcp: MCPServer, settings: EmailMCPSettings) -> None:
             open_world_hint=False,
         ),
     )
+    mcp.add_tool(
+        build_send_email_tool(settings),
+        name="send_email",
+        title="Send email",
+        annotations=ToolAnnotations(
+            read_only_hint=False,
+            destructive_hint=False,
+            idempotent_hint=False,
+            open_world_hint=False,
+        ),
+    )
 
 
 def build_list_email_folders_tool(
@@ -108,6 +119,29 @@ def build_move_email_to_folder_tool(
         return await move_email_to_folder_in_api(settings, message_id, folder)
 
     return move_email_to_folder
+
+
+def build_send_email_tool(
+    settings: EmailMCPSettings,
+) -> Callable[[str, str, str, str, str], Awaitable[EmailMessageInfo]]:
+    async def send_email(
+        sender_name: str,
+        sender_email: str,
+        recipient_email: str,
+        subject: str,
+        body: str,
+    ) -> EmailMessageInfo:
+        """Send an email message by placing it in the Sent folder."""
+        return await send_email_via_api(
+            settings,
+            sender_name=sender_name,
+            sender_email=sender_email,
+            recipient_email=recipient_email,
+            subject=subject,
+            body=body,
+        )
+
+    return send_email
 
 
 async def get_email_folders(
@@ -176,6 +210,42 @@ async def move_email_to_folder_in_api(
         response.raise_for_status()
 
     return parse_email_message_response(response.json())
+
+
+async def send_email_via_api(
+    settings: EmailMCPSettings,
+    *,
+    sender_name: str,
+    sender_email: str,
+    recipient_email: str,
+    subject: str,
+    body: str,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> EmailMessageInfo:
+    async with httpx.AsyncClient(
+        timeout=settings.email_api_timeout_seconds,
+        transport=transport,
+    ) as client:
+        create_response = await client.post(
+            settings.email_api_messages_url,
+            json={
+                "sender_name": sender_name,
+                "sender_email": sender_email,
+                "recipient_email": recipient_email,
+                "subject": subject,
+                "body": body,
+            },
+        )
+        create_response.raise_for_status()
+        created = parse_email_message_response(create_response.json())
+
+        move_response = await client.post(
+            f"{settings.email_api_messages_url}/{created['id']}/move",
+            json={"folder": "sent"},
+        )
+        move_response.raise_for_status()
+
+    return parse_email_message_response(move_response.json())
 
 
 def parse_email_folders_response(payload: Any) -> list[EmailFolderInfo]:
