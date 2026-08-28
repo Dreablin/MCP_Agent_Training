@@ -3,9 +3,11 @@ from datetime import datetime
 
 from langchain_core.tools import BaseTool, StructuredTool
 
+from apps.agent_app.hitl import build_ask_human_tool
+
 
 def build_local_tools() -> list[BaseTool]:
-    return [build_current_datetime_tool()]
+    return [build_current_datetime_tool(), build_ask_human_tool()]
 
 
 def combine_agent_tools(mcp_tools: Sequence[BaseTool]) -> list[BaseTool]:

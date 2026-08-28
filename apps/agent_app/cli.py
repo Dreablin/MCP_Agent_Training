@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse
 import asyncio
 import json
@@ -8,12 +10,14 @@ from typing import Any, TextIO
 from uuid import uuid4
 
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
+from langgraph.types import Command, Interrupt
 
 from apps.agent_app.config import AgentAppSettings
 from apps.agent_app.graph import AgentGraphRuntime, create_async_runtime, initial_state
 from apps.agent_app.llm import create_chat_model
 from apps.agent_app.local_tools import combine_agent_tools
 from apps.agent_app.mcp_registry import PersistentMCPToolRegistry
+from apps.agent_app.state import AgentState, HumanAnswer
 
 EXIT_COMMANDS = {"exit", "quit", ":q"}
 
@@ -84,7 +88,7 @@ async def interactive_loop(
             continue
 
         try:
-            await run_turn(runtime, user_input, thread_id, output=output)
+            await run_turn(runtime, user_input, thread_id, input_func=input_func, output=output)
         except Exception as exc:
             print_error(exc, debug=debug, output=output)
 
@@ -94,6 +98,7 @@ async def run_turn(
     user_input: str,
     thread_id: str,
     *,
+    input_func: Callable[[str], str] = input,
     output: TextIO,
 ) -> str:
     run_id = str(uuid4())
@@ -101,14 +106,29 @@ async def run_turn(
     state = initial_state(user_input, thread_id, run_id)
     runtime.audit_log.start_run(run_id, thread_id, user_input)
     final_response = ""
+    next_input: AgentStateInput = state
 
     output.write("[llm] thinking...\n")
-    async for update in runtime.graph.astream(state, config, stream_mode="updates"):
-        rendered = render_update(update, output)
-        if rendered:
-            final_response = rendered
+    while True:
+        interrupted = False
+        async for update in runtime.graph.astream(next_input, config, stream_mode="updates"):
+            interrupt_payload = interrupt_from_update(update)
+            if interrupt_payload is not None:
+                answer = prompt_for_human_answer(interrupt_payload, input_func, output)
+                runtime.audit_log.resume(run_id, thread_id, dict(answer))
+                next_input = Command(resume=answer)
+                output.write("[llm] resuming...\n")
+                interrupted = True
+                break
 
-    return final_response
+            rendered = render_update(update, output)
+            if rendered:
+                final_response = rendered
+        if not interrupted:
+            return final_response
+
+
+AgentStateInput = AgentState | Command[Any]
 
 
 def render_update(update: dict[str, Any], output: TextIO) -> str | None:
@@ -118,7 +138,7 @@ def render_update(update: dict[str, Any], output: TextIO) -> str | None:
             continue
         if node_name == "llm":
             render_llm_update(node_update, output)
-        elif node_name == "tools":
+        elif node_name in {"tools", "ask_human"}:
             render_tool_update(node_update, output)
         elif node_name == "finalize":
             final_response = str(node_update.get("final_response", ""))
@@ -126,6 +146,57 @@ def render_update(update: dict[str, Any], output: TextIO) -> str | None:
             if final_response:
                 output.write(f"{final_response}\n")
     return final_response
+
+
+def interrupt_from_update(update: dict[str, Any]) -> dict[str, Any] | None:
+    raw_interrupts = update.get("__interrupt__")
+    if raw_interrupts is None:
+        return None
+    if isinstance(raw_interrupts, (list, tuple)) and raw_interrupts:
+        return interrupt_to_payload(raw_interrupts[0])
+    return interrupt_to_payload(raw_interrupts)
+
+
+def interrupt_to_payload(value: Any) -> dict[str, Any]:
+    if isinstance(value, Interrupt):
+        payload = value.value
+        interrupt_id = value.id
+    else:
+        payload = value
+        interrupt_id = ""
+    result = dict(payload) if isinstance(payload, dict) else {"question": str(payload)}
+    if interrupt_id:
+        result["interrupt_id"] = interrupt_id
+    return result
+
+
+def prompt_for_human_answer(
+    payload: dict[str, Any],
+    input_func: Callable[[str], str],
+    output: TextIO,
+) -> HumanAnswer:
+    question = str(payload.get("question") or "The agent needs your input.")
+    output.write(f"[human] {question}\n")
+    reason = payload.get("reason")
+    if reason:
+        output.write(f"[human:reason] {reason}\n")
+    render_human_options(payload.get("options"), output)
+    value = input_func("human> ").strip()
+    return {"kind": "answer", "value": value}
+
+
+def render_human_options(options: Any, output: TextIO) -> None:
+    if not isinstance(options, list):
+        return
+    for index, option in enumerate(options, start=1):
+        if not isinstance(option, dict):
+            continue
+        label = str(option.get("label") or option.get("id") or f"Option {index}")
+        description = option.get("description")
+        if description:
+            output.write(f"[human:option] {index}. {label} - {description}\n")
+        else:
+            output.write(f"[human:option] {index}. {label}\n")
 
 
 def render_llm_update(update: dict[str, Any], output: TextIO) -> None:

@@ -120,7 +120,7 @@ through their existing MCP surfaces:
 - Todo MCP over stdio as a local child process.
 
 The agent graph is intentionally small: user messages go to one LLM node, the
-LLM may emit tool calls, `ToolNode` executes them, and the resulting
+LLM may emit tool calls, tool nodes execute them, and the resulting
 `ToolMessage` objects go back to the LLM until it returns a final answer.
 
 The LLM node prepends a system prompt from `apps.agent_app.prompts` to every
@@ -140,10 +140,16 @@ graph returns `ToolMessage(status="error")` entries telling the model to re-plan
 and call one state-changing tool, then wait for its result. Read-only tool
 batches are allowed.
 
-Human-in-the-loop remains a design goal for uncertainty, not blanket approval.
-The current first agent loop does not route every tool failure to a human. Human
-clarification should be added as an explicit model-selected path for ambiguity,
-missing required information, risky actions, or unrecoverable cases.
+Human-in-the-loop is available for uncertainty, not blanket approval. The LLM can
+call the local `ask_human` tool when a request is ambiguous, required
+information is missing, an action is risky, or the situation is unrecoverable
+without clarification. That tool is routed to a dedicated graph node that calls
+LangGraph `interrupt()`, resumes with the human answer, appends a `ToolMessage`,
+and sends control back to the LLM.
+
+The graph also has a pass-through `human_gate` after tool execution. It does not
+apply deterministic rules yet; it exists as a stable place to add hard
+conditions later while testing where the LLM asks for clarification by itself.
 
 The agent state stores conversation history using LangGraph's `add_messages`
 reducer and LangChain message types. AI tool calls and `ToolMessage` responses are
@@ -155,10 +161,10 @@ executed by LangGraph `ToolNode`. MCP `is_error` results are converted into tool
 errors so the resulting `ToolMessage(status="error")` is visible to the LLM as
 part of the standard message history.
 
-The agent can also use local non-MCP tools. The first local tool is
-`get_current_datetime`, which reads this computer's local clock and returns only
-the local `datetime`, `date`, `time`, and `weekday`. CLI and real Studio runtime
-include this local tool together with MCP tools.
+The agent can also use local non-MCP tools. `get_current_datetime` reads this
+computer's local clock and returns only the local `datetime`, `date`, `time`, and
+`weekday`. `ask_human` exposes the human clarification path to the LLM. CLI and
+real Studio runtime include these local tools together with MCP tools.
 
 LLM construction is centralized in `apps.agent_app.llm.create_chat_model`.
 `AGENT_LLM_PROVIDER` accepts `ollama` or `openai`. The default is local Ollama at

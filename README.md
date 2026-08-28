@@ -82,6 +82,8 @@ three MCP servers. The first implementation focuses on orchestration mechanics:
 - MCP tool discovery through Email HTTP MCP, Calendar HTTP MCP, and Todo stdio MCP;
 - an agent-local `get_current_datetime` tool for resolving relative dates and
   times using this computer's local clock;
+- an agent-local `ask_human` tool for model-selected clarification, implemented
+  with LangGraph interrupt/resume;
 - persistent graph checkpoints for pause/resume human-in-the-loop flows;
 - LangGraph-native message history, including AI tool calls and ToolMessage results;
 - a simple `LLM -> tools -> LLM` loop using standard LangGraph ToolNode execution;
@@ -89,6 +91,8 @@ three MCP servers. The first implementation focuses on orchestration mechanics:
   and not claim action success before a successful tool result;
 - tool errors return to the LLM as `ToolMessage(status="error")` before any human
   clarification is considered;
+- a pass-through human gate after tool execution, ready for future deterministic
+  interrupt rules without adding those rules yet;
 - structured SQLite audit logging for runs, node events, tool calls, human
   interrupts, and state snapshots.
 
@@ -116,5 +120,5 @@ python -m apps.agent_app.cli
 
 After installing the project, the same CLI is also available as `agent-cli`. The
 CLI opens the MCP registry once, keeps one LangGraph thread for the session,
-streams LLM/tool/final updates for each command, and then waits for the next
-command.
+streams LLM/tool/human/final updates for each command, resumes after a human
+answer when `ask_human` interrupts, and then waits for the next command.

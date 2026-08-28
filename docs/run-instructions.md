@@ -43,6 +43,10 @@ The CLI keeps one LangGraph thread for the session. Type normal requests to run
 the agent, `:thread` to show the current thread id, `:help` for commands, and
 `exit` or `quit` to stop.
 
+If the LLM calls `ask_human`, the CLI prints the human question, waits for one
+answer in the same terminal, resumes the paused graph, and then continues
+streaming tool and final updates for that same command.
+
 Todo MCP is local stdio-only and has no URL. An MCP client launches it as a child
 process when needed:
 

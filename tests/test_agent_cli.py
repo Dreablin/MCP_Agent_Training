@@ -3,7 +3,7 @@ from io import StringIO
 from pathlib import Path
 from typing import Any
 
-from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 from langgraph.checkpoint.memory import InMemorySaver
 
@@ -11,6 +11,7 @@ from apps.agent_app.audit import AgentAuditLog
 from apps.agent_app.cli import exception_messages, interactive_loop, parse_args, run_turn
 from apps.agent_app.config import AgentAppSettings
 from apps.agent_app.graph import build_agent_graph, create_async_runtime
+from apps.agent_app.hitl import build_ask_human_tool
 
 
 def test_parse_args_accepts_thread_id_and_debug() -> None:
@@ -150,6 +151,55 @@ def test_run_turn_streams_tool_errors(tmp_path: Path) -> None:
     asyncio_run(run_turn(runtime, "Break it", "cli-thread", output=output))
 
     assert "[tool:error] broken_tool" in output.getvalue()
+
+
+def test_run_turn_handles_human_interrupt_and_resume(tmp_path: Path) -> None:
+    audit_log = create_audit_log(tmp_path)
+    model = ScriptedChatModel(
+        [
+            AIMessage(
+                content="I need clarification.",
+                tool_calls=[
+                    {
+                        "name": "ask_human",
+                        "args": {
+                            "question": "Which meeting should I cancel?",
+                            "reason": "Two meetings match.",
+                        },
+                        "id": "call-human",
+                    }
+                ],
+            ),
+            AIMessage(content="I will cancel the second meeting."),
+        ]
+    )
+    runtime = build_agent_graph(
+        model,
+        [build_ask_human_tool()],
+        audit_log,
+        checkpointer=InMemorySaver(),
+        allow_sync=False,
+    )
+    output = StringIO()
+
+    final_response = asyncio_run(
+        run_turn(
+            runtime,
+            "Cancel dog meeting",
+            "cli-thread",
+            input_func=lambda prompt: "Cancel the second one.",
+            output=output,
+        )
+    )
+
+    text = output.getvalue()
+    assert "[human] Which meeting should I cancel?" in text
+    assert "[human:reason] Two meetings match." in text
+    assert "[llm] resuming..." in text
+    assert "[tool:ok] ask_human" in text
+    assert "I will cancel the second meeting." in text
+    assert final_response == "I will cancel the second meeting."
+    assert any(isinstance(message, ToolMessage) for message in model.seen_messages[-1])
 
 
 def test_cli_async_runtime_supports_async_streaming(tmp_path: Path) -> None:

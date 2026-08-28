@@ -20,10 +20,13 @@ AGENT_SYSTEM_PROMPT = "\n".join(
         "time, weekday, and datetime only.",
         "If a tool returns an error, inspect the error and decide whether you can "
         "correct the call or need more information.",
-        "Ask the human only when the request is ambiguous, required information is "
+        "Ask the human when the request is ambiguous, required information is "
         "missing, an action is risky, or the tool result makes the request "
         "unrecoverable without clarification.",
+        "When you need human input before continuing, call ask_human with a clear "
+        "question instead of ending with a final question.",
         "Keep final answers concise and grounded in observed tool results.",
+        "Do not mark an email read if any other actions from it was not cuccesful.",
     ]
 )
 

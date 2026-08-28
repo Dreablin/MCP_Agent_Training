@@ -19,8 +19,10 @@ from apps.agent_app.graph import (
     build_sqlite_checkpointer,
     compile_agent_graph,
     format_tool_error_for_llm,
+    initial_state,
     merge_state_for_audit,
 )
+from apps.agent_app.hitl import build_ask_human_tool
 from apps.agent_app.llm import create_chat_model
 from apps.agent_app.mcp_registry import (
     MCPToolExecutionError,
@@ -324,6 +326,63 @@ def test_tool_error_returns_to_llm_instead_of_interrupting(tmp_path: Path) -> No
     tool_result = latest_json(audit_log.db_path, "tool_calls", "result_json")
     assert tool_result["status"] == "error"
     assert latest_value(audit_log.db_path, "tool_calls", "error") is not None
+
+
+def test_ask_human_interrupts_and_resume_returns_answer_to_llm(tmp_path: Path) -> None:
+    async def run() -> tuple[dict[str, Any], dict[str, Any], ScriptedChatModel, AgentAuditLog]:
+        audit_log = create_audit_log(tmp_path)
+        model = ScriptedChatModel(
+            [
+                AIMessage(
+                    content="I need the human to choose.",
+                    tool_calls=[
+                        {
+                            "name": "ask_human",
+                            "args": {
+                                "question": "Which meeting should I cancel?",
+                                "reason": "Two matching meetings were found.",
+                            },
+                            "id": "call-human",
+                        }
+                    ],
+                ),
+                AIMessage(content="I will cancel the second meeting."),
+            ]
+        )
+        runtime = build_agent_graph(
+            model,
+            [build_ask_human_tool()],
+            audit_log,
+            checkpointer=InMemorySaver(),
+            allow_sync=False,
+        )
+        config = {"configurable": {"thread_id": "thread-hitl"}}
+        state = initial_state("Cancel the dog meeting", "thread-hitl", "run-hitl")
+        audit_log.start_run("run-hitl", "thread-hitl", "Cancel the dog meeting")
+
+        interrupted = await runtime.graph.ainvoke(state, config)
+        resumed = await runtime.aresume(
+            "thread-hitl",
+            "run-hitl",
+            {"kind": "answer", "value": "Cancel the second one."},
+        )
+        return interrupted, resumed["state"], model, audit_log
+
+    interrupted, state, model, audit_log = asyncio_run(run())
+    tool_messages = [message for message in state["messages"] if isinstance(message, ToolMessage)]
+
+    assert "__interrupt__" in interrupted
+    assert state["status"] == "completed"
+    assert state["final_response"] == "I will cancel the second meeting."
+    assert len(tool_messages) == 1
+    assert tool_messages[0].tool_call_id == "call-human"
+    assert "Cancel the second one." in str(tool_messages[0].content)
+    assert any(isinstance(message, ToolMessage) for message in model.seen_messages[-1])
+    assert count_rows(audit_log.db_path, "human_interrupts") == 1
+    question = latest_json(audit_log.db_path, "human_interrupts", "question_json")
+    answer = latest_json(audit_log.db_path, "human_interrupts", "answer_json")
+    assert question["question"] == "Which meeting should I cancel?"
+    assert answer == {"kind": "answer", "value": "Cancel the second one."}
 
 
 def test_tool_error_formatter_returns_clean_message() -> None:

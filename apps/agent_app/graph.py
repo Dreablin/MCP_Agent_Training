@@ -1,3 +1,4 @@
+import json
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -7,10 +8,11 @@ from uuid import uuid4
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig, RunnableLambda
 from langchain_core.tools import BaseTool
+from langgraph.errors import GraphInterrupt
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
-from langgraph.types import Command
+from langgraph.types import Command, interrupt
 
 from apps.agent_app.audit import AgentAuditLog
 from apps.agent_app.config import AgentAppSettings
@@ -56,6 +58,7 @@ class AgentGraphRuntime:
     ) -> dict[str, Any]:
         self.ensure_sync_allowed()
         config = {"configurable": {"thread_id": thread_id}}
+        self.audit_log.resume(run_id, thread_id, dict(answer))
         result = self.graph.invoke(Command(resume=answer), config)
         return {"thread_id": thread_id, "run_id": run_id, "state": result}
 
@@ -66,6 +69,7 @@ class AgentGraphRuntime:
         answer: HumanAnswer,
     ) -> dict[str, Any]:
         config = {"configurable": {"thread_id": thread_id}}
+        self.audit_log.resume(run_id, thread_id, dict(answer))
         result = await self.graph.ainvoke(Command(resume=answer), config)
         return {"thread_id": thread_id, "run_id": run_id, "state": result}
 
@@ -209,6 +213,30 @@ def compile_agent_graph(
         awrap_tool_call=make_async_audit_tool_wrapper(audit_log),
     )
 
+    def ask_human_node(state: AgentState) -> AgentState:
+        import time
+
+        log_node_enter(audit_log, state, "ask_human")
+        tool_call = latest_human_tool_call(state, tools_by_name)
+        if tool_call is None:
+            updates: AgentState = {"status": "running"}
+            log_node_exit(audit_log, state, "ask_human", updates)
+            return updates
+
+        started = time.perf_counter()
+        result = execute_human_tool_call(audit_log, state, tool_call)
+        duration_ms = round((time.perf_counter() - started) * 1000)
+        audit_tool_result(audit_log, state, tool_call, result, duration_ms)
+        updates = {"messages": [result], "status": "running"}
+        log_node_exit(audit_log, state, "ask_human", updates)
+        return updates
+
+    def human_gate(state: AgentState) -> AgentState:
+        log_node_enter(audit_log, state, "human_gate")
+        updates: AgentState = {"status": "running"}
+        log_node_exit(audit_log, state, "human_gate", updates)
+        return updates
+
     def finalize(state: AgentState) -> AgentState:
         log_node_enter(audit_log, state, "finalize")
         final_response = final_response_from_state(state)
@@ -224,6 +252,8 @@ def compile_agent_graph(
     builder.add_node("llm", RunnableLambda(call_llm, afunc=acall_llm))
     builder.add_node("enforce_tool_policy", enforce_tool_policy)
     builder.add_node("tools", tool_node)
+    builder.add_node("ask_human", ask_human_node)
+    builder.add_node("human_gate", human_gate)
     builder.add_node("finalize", finalize)
 
     builder.add_edge(START, "ensure_metadata")
@@ -241,10 +271,13 @@ def compile_agent_graph(
         route_after_tool_policy,
         {
             "tools": "tools",
+            "ask_human": "ask_human",
             "llm": "llm",
         },
     )
-    builder.add_edge("tools", "llm")
+    builder.add_edge("tools", "human_gate")
+    builder.add_edge("ask_human", "human_gate")
+    builder.add_edge("human_gate", "llm")
     builder.add_edge("finalize", END)
 
     return builder.compile(checkpointer=checkpointer)
@@ -260,6 +293,8 @@ def route_after_llm(state: AgentState) -> str:
 def route_after_tool_policy(state: AgentState) -> str:
     latest = latest_message_from_state(state)
     if isinstance(latest, AIMessage) and latest.tool_calls:
+        if latest_human_tool_call(state, {}) is not None:
+            return "ask_human"
         return "tools"
     return "llm"
 
@@ -346,6 +381,8 @@ def make_audit_tool_wrapper(audit_log: AgentAuditLog) -> Any:
         started = time.perf_counter()
         try:
             result = execute(request)
+        except GraphInterrupt:
+            raise
         except Exception as exc:
             duration_ms = round((time.perf_counter() - started) * 1000)
             audit_tool_exception(audit_log, state, tool_call, exc, duration_ms)
@@ -366,6 +403,8 @@ def make_async_audit_tool_wrapper(audit_log: AgentAuditLog) -> Any:
         started = time.perf_counter()
         try:
             result = await execute(request)
+        except GraphInterrupt:
+            raise
         except Exception as exc:
             duration_ms = round((time.perf_counter() - started) * 1000)
             audit_tool_exception(audit_log, state, tool_call, exc, duration_ms)
@@ -375,6 +414,101 @@ def make_async_audit_tool_wrapper(audit_log: AgentAuditLog) -> Any:
         return cast(ToolMessage | Command[Any], result)
 
     return awrap_tool_call
+
+
+def execute_human_tool_call(
+    audit_log: AgentAuditLog,
+    state: AgentState,
+    tool_call: dict[str, Any],
+) -> ToolMessage:
+    payload = human_interrupt_payload(tool_call)
+    try:
+        answer = interrupt(payload)
+    except GraphInterrupt as exc:
+        audit_human_interrupt(audit_log, state, payload, exc)
+        raise
+
+    answer_payload = human_answer_payload(answer)
+    audit_log.resume(state["run_id"], state["thread_id"], answer_payload)
+    return ToolMessage(
+        content=json.dumps(answer_payload, ensure_ascii=False, sort_keys=True),
+        name=str(tool_call.get("name", "ask_human")),
+        tool_call_id=str(tool_call.get("id", "")),
+        status="success",
+    )
+
+
+def human_interrupt_payload(tool_call: dict[str, Any]) -> dict[str, Any]:
+    args = tool_call.get("args", {})
+    payload = dict(args) if isinstance(args, dict) else {"question": str(args)}
+    if not payload.get("question"):
+        payload["question"] = "The agent needs your input."
+    payload.update(
+        {
+            "tool_name": str(tool_call.get("name", "ask_human")),
+            "tool_call_id": str(tool_call.get("id", "")),
+        }
+    )
+    return payload
+
+
+def human_answer_payload(answer: Any) -> dict[str, Any]:
+    if isinstance(answer, dict):
+        return dict(answer)
+    return {"kind": "answer", "value": str(answer)}
+
+
+def audit_human_interrupt(
+    audit_log: AgentAuditLog,
+    state: AgentState,
+    payload: dict[str, Any],
+    exc: GraphInterrupt,
+) -> None:
+    question: dict[str, Any] = dict(payload)
+    interrupt_values = interrupt_values_from_exception(exc)
+    if interrupt_values:
+        question["interrupts"] = interrupt_values
+    audit_log.interrupt(state["run_id"], state["thread_id"], question)
+
+
+def tool_call_requires_human(
+    tool_call: Any,
+    tools_by_name: dict[str, BaseTool | Any],
+) -> bool:
+    tool_name = str(tool_call.get("name", ""))
+    tool = tools_by_name.get(tool_name)
+    metadata = getattr(tool, "metadata", None)
+    if isinstance(metadata, dict) and metadata.get("requires_human"):
+        return True
+    return tool_name == "ask_human"
+
+
+def latest_human_tool_call(
+    state: AgentState,
+    tools_by_name: dict[str, BaseTool | Any],
+) -> dict[str, Any] | None:
+    latest = latest_message_from_state(state)
+    if not isinstance(latest, AIMessage) or not latest.tool_calls:
+        return None
+    for tool_call in latest.tool_calls:
+        if tool_call_requires_human(tool_call, tools_by_name):
+            return cast(dict[str, Any], tool_call)
+    return None
+
+
+def interrupt_values_from_exception(exc: GraphInterrupt) -> list[dict[str, Any]]:
+    interrupts = exc.args[0] if exc.args else ()
+    values: list[dict[str, Any]] = []
+    if not isinstance(interrupts, Sequence):
+        return values
+    for item in interrupts:
+        values.append(
+            {
+                "id": str(getattr(item, "id", "")),
+                "value": getattr(item, "value", None),
+            }
+        )
+    return values
 
 
 def audit_tool_result(

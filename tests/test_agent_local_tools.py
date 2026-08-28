@@ -24,10 +24,17 @@ def test_current_datetime_tool_returns_local_time_payload() -> None:
 def test_local_tools_include_current_datetime_tool() -> None:
     tools = build_local_tools()
 
-    assert [tool.name for tool in tools] == ["get_current_datetime"]
+    assert [tool.name for tool in tools] == ["get_current_datetime", "ask_human"]
     assert "relative date/time requests" in tools[0].description
     assert "timezone" not in tools[0].description.lower()
     assert tools[0].metadata == {"source": "agent_local", "read_only": True}
+    assert "clarification" in tools[1].description
+    assert tools[1].metadata == {
+        "source": "agent_local",
+        "read_only": False,
+        "requires_human": True,
+        "batchable": False,
+    }
 
 
 def test_combine_agent_tools_appends_local_tools() -> None:
@@ -42,4 +49,8 @@ def test_combine_agent_tools_appends_local_tools() -> None:
 
     tools = combine_agent_tools([mcp_tool])
 
-    assert [tool.name for tool in tools] == ["fake_mcp_tool", "get_current_datetime"]
+    assert [tool.name for tool in tools] == [
+        "fake_mcp_tool",
+        "get_current_datetime",
+        "ask_human",
+    ]
