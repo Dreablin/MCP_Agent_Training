@@ -1,9 +1,12 @@
+from collections.abc import AsyncIterator
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
+from fastapi.sse import EventSourceResponse, ServerSentEvent
 
-from apps.calendar_app.api.dependencies import get_event_service
+from apps.calendar_app.api.dependencies import get_calendar_event_bus, get_event_service
+from apps.calendar_app.events import CalendarEventBus
 from apps.calendar_app.models import CalendarEventStatus
 from apps.calendar_app.repositories import EventSearch
 from apps.calendar_app.schemas import CalendarEventCreate, CalendarEventRead, CalendarEventUpdate
@@ -58,6 +61,23 @@ def find_overlaps(
     start_at = validate_required_local_datetime(start_at, "start_at")
     end_at = validate_required_local_datetime(end_at, "end_at")
     return service.find_overlaps(start_at, end_at, exclude_event_id=exclude_event_id)
+
+
+@router.get("/events", response_class=EventSourceResponse)
+async def stream_calendar_events(
+    request: Request,
+    event_bus: Annotated[CalendarEventBus, Depends(get_calendar_event_bus)],
+) -> AsyncIterator[ServerSentEvent]:
+    subscription = event_bus.subscribe()
+    try:
+        yield ServerSentEvent(event="connected", data={"status": "ok"})
+        while True:
+            event = await subscription.get()
+            if await request.is_disconnected():
+                break
+            yield ServerSentEvent(event="events_changed", data=event.as_dict())
+    finally:
+        event_bus.unsubscribe(subscription)
 
 
 @router.get("/{event_id}", response_model=CalendarEventRead)

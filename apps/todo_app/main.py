@@ -7,6 +7,7 @@ from nicegui import ui
 from apps.todo_app.api import tasks_router
 from apps.todo_app.config import TodoAppSettings, get_settings
 from apps.todo_app.database import build_engine, build_session_factory
+from apps.todo_app.events import TaskEventBus
 from apps.todo_app.models import Task  # noqa: F401
 from apps.todo_app.ui.pages import register_pages
 from shared.database_setup import initialize_database_if_missing
@@ -36,13 +37,14 @@ def create_app(settings: TodoAppSettings | None = None, *, include_ui: bool = Fa
     )
     app.state.engine = engine
     app.state.session_factory = build_session_factory(engine)
+    app.state.task_event_bus = TaskEventBus()
 
     register_error_handlers(app)
     register_health_route(app, resolved_settings.app_name, APP_VERSION)
     app.include_router(tasks_router)
 
     if include_ui:
-        register_pages(resolved_settings, app.state.session_factory)
+        register_pages(resolved_settings, app.state.session_factory, app.state.task_event_bus)
         ui.run_with(app)
 
     return app

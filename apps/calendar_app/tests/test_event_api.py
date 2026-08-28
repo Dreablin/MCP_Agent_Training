@@ -47,6 +47,13 @@ def test_create_get_and_list_event(client: TestClient) -> None:
     assert len(list_response.json()) == 1
 
 
+def test_calendar_event_stream_is_exposed(client: TestClient) -> None:
+    response = client.get("/openapi.json")
+
+    assert response.status_code == 200
+    assert "/api/events/events" in response.json()["paths"]
+
+
 def test_create_event_without_status_and_location(client: TestClient) -> None:
     payload = api_payload()
     payload.pop("location")

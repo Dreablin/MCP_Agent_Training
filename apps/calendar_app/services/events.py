@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import builtins
 from datetime import datetime
 
+from apps.calendar_app.events import CalendarEvent
 from apps.calendar_app.models import CalendarEventStatus
 from apps.calendar_app.repositories import CalendarEventRepository, EventSearch
 from apps.calendar_app.schemas import CalendarEventCreate, CalendarEventRead, CalendarEventUpdate
@@ -12,11 +14,14 @@ from shared.errors import ConflictError, NotFoundError, ValidationAppError
 class CalendarEventService:
     def __init__(self, repository: CalendarEventRepository) -> None:
         self._repository = repository
+        self._events: list[CalendarEvent] = []
 
     def create(self, payload: CalendarEventCreate) -> CalendarEventRead:
         if payload.status != CalendarEventStatus.CANCELLED:
             self._ensure_no_active_overlap(payload.start_at, payload.end_at)
-        return self._to_read_model(self._repository.create(payload))
+        event = self._to_read_model(self._repository.create(payload))
+        self._record_event("created", event)
+        return event
 
     def list_events(self, search: EventSearch | None = None) -> list[CalendarEventRead]:
         return [self._to_read_model(event) for event in self._repository.list(search)]
@@ -46,21 +51,36 @@ class CalendarEventService:
         event = self._repository.update(event_id, values)
         if event is None:
             raise NotFoundError("Calendar event not found", details={"id": event_id})
-        return self._to_read_model(event)
+        updated_event = self._to_read_model(event)
+        self._record_event("updated", updated_event)
+        return updated_event
 
     def reschedule(self, event_id: str, start_at: datetime, end_at: datetime) -> CalendarEventRead:
         return self.update(event_id, CalendarEventUpdate(start_at=start_at, end_at=end_at))
 
     def cancel(self, event_id: str) -> CalendarEventRead:
-        return self.update(event_id, CalendarEventUpdate(status=CalendarEventStatus.CANCELLED))
+        event = self.update(event_id, CalendarEventUpdate(status=CalendarEventStatus.CANCELLED))
+        self._events[-1] = CalendarEvent(
+            action="cancelled",
+            event_id=event.id,
+            status=event.status,
+        )
+        return event
 
     def restore(self, event_id: str) -> CalendarEventRead:
-        return self.update(event_id, CalendarEventUpdate(status=CalendarEventStatus.CONFIRMED))
+        event = self.update(event_id, CalendarEventUpdate(status=CalendarEventStatus.CONFIRMED))
+        self._events[-1] = CalendarEvent(
+            action="restored",
+            event_id=event.id,
+            status=event.status,
+        )
+        return event
 
     def delete(self, event_id: str) -> None:
         deleted = self._repository.delete(event_id)
         if not deleted:
             raise NotFoundError("Calendar event not found", details={"id": event_id})
+        self._events.append(CalendarEvent(action="deleted", event_id=event_id))
 
     def find_overlaps(
         self,
@@ -87,6 +107,11 @@ class CalendarEventService:
         if exclude_event_id is None:
             return events
         return [event for event in events if event.id != exclude_event_id]
+
+    def pull_events(self) -> builtins.list[CalendarEvent]:
+        events = list(self._events)
+        self._events.clear()
+        return events
 
     @staticmethod
     def _to_read_model(event: object) -> CalendarEventRead:
@@ -124,3 +149,8 @@ class CalendarEventService:
         if isinstance(status, CalendarEventStatus):
             return status != CalendarEventStatus.CANCELLED
         return status != CalendarEventStatus.CANCELLED.value
+
+    def _record_event(self, action: str, event: CalendarEventRead) -> None:
+        self._events.append(
+            CalendarEvent(action=action, event_id=event.id, status=event.status)
+        )
