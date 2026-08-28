@@ -5,11 +5,11 @@ from nicegui import ui
 from nicegui.element import Element
 from sqlalchemy.orm import Session, sessionmaker
 
+from apps.todo_app.command_runner import TaskCommandRunner
 from apps.todo_app.config import TodoAppSettings
-from apps.todo_app.database import session_scope
 from apps.todo_app.events import TaskEventBus
 from apps.todo_app.models import TaskPriority, TaskStatus
-from apps.todo_app.repositories import TaskRepository, TaskSearch
+from apps.todo_app.repositories import TaskSearch
 from apps.todo_app.schemas import TaskCreate, TaskRead, TaskUpdate
 from apps.todo_app.services import TaskService
 from shared.errors import AppError
@@ -45,16 +45,15 @@ def register_pages(
     settings: TodoAppSettings,
     session_factory: sessionmaker[Session],
     event_bus: TaskEventBus,
+    command_runner: TaskCommandRunner | None = None,
 ) -> None:
+    resolved_command_runner = command_runner or TaskCommandRunner(
+        session_factory,
+        event_bus,
+    )
+
     def run_with_service(action: Callable[[TaskService], T]) -> T:
-        service: TaskService | None = None
-        with session_scope(session_factory) as session:
-            service = TaskService(TaskRepository(session))
-            result = action(service)
-        assert service is not None
-        for event in service.pull_events():
-            event_bus.publish(event)
-        return result
+        return resolved_command_runner.run(action)
 
     def notify_error(exc: Exception) -> None:
         if isinstance(exc, AppError):
@@ -634,6 +633,9 @@ def register_pages(
                     window.todoAppEventSource.close();
                 }
                 const source = new EventSource('/api/tasks/events');
+                source.addEventListener('connected', () => {
+                    emitEvent('todoTasksChanged');
+                });
                 source.addEventListener('tasks_changed', () => {
                     emitEvent('todoTasksChanged');
                 });

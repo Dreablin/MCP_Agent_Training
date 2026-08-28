@@ -2,7 +2,7 @@ import json
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from datetime import datetime
-from typing import TypedDict
+from typing import TypedDict, TypeVar
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
@@ -10,6 +10,7 @@ from mcp.types import ToolAnnotations
 from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy.orm import Session, sessionmaker
 
+from apps.calendar_app.command_runner import CalendarCommandRunner
 from apps.calendar_app.database import session_scope
 from apps.calendar_app.repositories import CalendarEventRepository, EventSearch
 from apps.calendar_app.schemas import (
@@ -41,7 +42,16 @@ class CalendarEventInfo(TypedDict):
     updated_at: str
 
 
-def register_tools(mcp: MCPServer, session_factory: sessionmaker[Session]) -> None:
+class CalendarDeleteResult(TypedDict):
+    id: str
+    deleted: bool
+
+
+def register_tools(
+    mcp: MCPServer,
+    session_factory: sessionmaker[Session],
+    command_runner: CalendarCommandRunner,
+) -> None:
     """Register Calendar MCP tools here as they are added."""
     mcp.add_tool(
         get_list_calendar_events_tool(session_factory),
@@ -62,7 +72,7 @@ def register_tools(mcp: MCPServer, session_factory: sessionmaker[Session]) -> No
         ),
     )
     mcp.add_tool(
-        create_calendar_event_tool(session_factory),
+        create_calendar_event_tool(session_factory, command_runner),
         name="create_calendar_event",
         title="Create calendar event",
         annotations=ToolAnnotations(
@@ -73,7 +83,7 @@ def register_tools(mcp: MCPServer, session_factory: sessionmaker[Session]) -> No
         ),
     )
     mcp.add_tool(
-        update_calendar_event_tool(session_factory),
+        update_calendar_event_tool(session_factory, command_runner),
         name="update_calendar_event",
         title="Update calendar event",
         annotations=ToolAnnotations(
@@ -84,12 +94,34 @@ def register_tools(mcp: MCPServer, session_factory: sessionmaker[Session]) -> No
         ),
     )
     mcp.add_tool(
-        cancel_calendar_event_tool(session_factory),
+        cancel_calendar_event_tool(session_factory, command_runner),
         name="cancel_calendar_event",
         title="Cancel calendar event",
         annotations=ToolAnnotations(
             read_only_hint=False,
             destructive_hint=False,
+            idempotent_hint=False,
+            open_world_hint=False,
+        ),
+    )
+    mcp.add_tool(
+        restore_calendar_event_tool(session_factory, command_runner),
+        name="restore_calendar_event",
+        title="Restore calendar event",
+        annotations=ToolAnnotations(
+            read_only_hint=False,
+            destructive_hint=False,
+            idempotent_hint=False,
+            open_world_hint=False,
+        ),
+    )
+    mcp.add_tool(
+        delete_calendar_event_tool(session_factory, command_runner),
+        name="delete_calendar_event",
+        title="Delete calendar event",
+        annotations=ToolAnnotations(
+            read_only_hint=False,
+            destructive_hint=True,
             idempotent_hint=False,
             open_world_hint=False,
         ),
@@ -142,6 +174,7 @@ def search_calendar_events_tool(
 
 def create_calendar_event_tool(
     session_factory: sessionmaker[Session],
+    command_runner: CalendarCommandRunner,
 ) -> Callable[..., CalendarEventInfo]:
     def create_calendar_event(
         title: str,
@@ -153,6 +186,7 @@ def create_calendar_event_tool(
         """Create a new calendar event using local naive datetimes without timezone."""
         return create_calendar_event_with_service(
             session_factory,
+            command_runner=command_runner,
             title=title,
             start_at=start_at,
             end_at=end_at,
@@ -165,6 +199,7 @@ def create_calendar_event_tool(
 
 def update_calendar_event_tool(
     session_factory: sessionmaker[Session],
+    command_runner: CalendarCommandRunner,
 ) -> Callable[..., CalendarEventInfo]:
     def update_calendar_event(
         event_id: str,
@@ -178,6 +213,7 @@ def update_calendar_event_tool(
         """Update an existing calendar event by ID using local naive datetimes."""
         return update_calendar_event_with_service(
             session_factory,
+            command_runner=command_runner,
             event_id=event_id,
             title=title,
             start_at=start_at,
@@ -192,12 +228,47 @@ def update_calendar_event_tool(
 
 def cancel_calendar_event_tool(
     session_factory: sessionmaker[Session],
+    command_runner: CalendarCommandRunner,
 ) -> Callable[..., CalendarEventInfo]:
     def cancel_calendar_event(event_id: str) -> CalendarEventInfo:
         """Cancel an existing calendar event by ID."""
-        return cancel_calendar_event_with_service(session_factory, event_id=event_id)
+        return cancel_calendar_event_with_service(
+            session_factory,
+            command_runner=command_runner,
+            event_id=event_id,
+        )
 
     return cancel_calendar_event
+
+
+def restore_calendar_event_tool(
+    session_factory: sessionmaker[Session],
+    command_runner: CalendarCommandRunner,
+) -> Callable[..., CalendarEventInfo]:
+    def restore_calendar_event(event_id: str) -> CalendarEventInfo:
+        """Restore a cancelled calendar event by ID."""
+        return restore_calendar_event_with_service(
+            session_factory,
+            command_runner=command_runner,
+            event_id=event_id,
+        )
+
+    return restore_calendar_event
+
+
+def delete_calendar_event_tool(
+    session_factory: sessionmaker[Session],
+    command_runner: CalendarCommandRunner,
+) -> Callable[..., CalendarDeleteResult]:
+    def delete_calendar_event(event_id: str) -> CalendarDeleteResult:
+        """Delete a calendar event permanently by ID."""
+        return delete_calendar_event_with_service(
+            session_factory,
+            command_runner=command_runner,
+            event_id=event_id,
+        )
+
+    return delete_calendar_event
 
 
 def list_calendar_events_with_service(
@@ -256,6 +327,7 @@ def search_calendar_events_with_service(
 def create_calendar_event_with_service(
     session_factory: sessionmaker[Session],
     *,
+    command_runner: CalendarCommandRunner | None = None,
     title: str,
     start_at: datetime,
     end_at: datetime,
@@ -273,8 +345,11 @@ def create_calendar_event_with_service(
                 for participant in participants or []
             ],
         )
-        with calendar_event_service_scope(session_factory) as service:
-            created = service.create(payload)
+        created = run_calendar_mutation(
+            session_factory,
+            command_runner,
+            lambda service: service.create(payload),
+        )
     except ConflictError as exc:
         raise ToolError(format_calendar_conflict_error(exc)) from exc
     except AppError as exc:
@@ -290,6 +365,7 @@ def create_calendar_event_with_service(
 def update_calendar_event_with_service(
     session_factory: sessionmaker[Session],
     *,
+    command_runner: CalendarCommandRunner | None = None,
     event_id: str,
     title: str | None = None,
     start_at: datetime | None = None,
@@ -320,8 +396,11 @@ def update_calendar_event_with_service(
 
     try:
         payload = CalendarEventUpdate.model_validate(update_values)
-        with calendar_event_service_scope(session_factory) as service:
-            updated = service.update(event_id, payload)
+        updated = run_calendar_mutation(
+            session_factory,
+            command_runner,
+            lambda service: service.update(event_id, payload),
+        )
     except ConflictError as exc:
         raise ToolError(format_calendar_conflict_error(exc)) from exc
     except AppError as exc:
@@ -337,15 +416,63 @@ def update_calendar_event_with_service(
 def cancel_calendar_event_with_service(
     session_factory: sessionmaker[Session],
     *,
+    command_runner: CalendarCommandRunner | None = None,
     event_id: str,
 ) -> CalendarEventInfo:
     try:
-        with calendar_event_service_scope(session_factory) as service:
-            cancelled = service.cancel(event_id)
+        cancelled = run_calendar_mutation(
+            session_factory,
+            command_runner,
+            lambda service: service.cancel(event_id),
+        )
     except AppError as exc:
         raise ToolError(format_app_error(exc)) from exc
 
     return calendar_event_to_info(cancelled)
+
+
+def restore_calendar_event_with_service(
+    session_factory: sessionmaker[Session],
+    *,
+    command_runner: CalendarCommandRunner | None = None,
+    event_id: str,
+) -> CalendarEventInfo:
+    restored = run_calendar_mutation(
+        session_factory,
+        command_runner,
+        lambda service: service.restore(event_id),
+    )
+
+    return calendar_event_to_info(restored)
+
+
+def delete_calendar_event_with_service(
+    session_factory: sessionmaker[Session],
+    *,
+    command_runner: CalendarCommandRunner | None = None,
+    event_id: str,
+) -> CalendarDeleteResult:
+    run_calendar_mutation(
+        session_factory,
+        command_runner,
+        lambda service: service.delete(event_id),
+    )
+    return {"id": event_id, "deleted": True}
+
+
+T = TypeVar("T")
+
+
+def run_calendar_mutation[T](
+    session_factory: sessionmaker[Session],
+    command_runner: CalendarCommandRunner | None,
+    action: Callable[[CalendarEventService], T],
+) -> T:
+    if command_runner is not None:
+        return command_runner.run(action)
+
+    with calendar_event_service_scope(session_factory) as service:
+        return action(service)
 
 
 @contextmanager

@@ -5,13 +5,18 @@ from mcp.server.mcpserver.exceptions import ToolError
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
+from apps.calendar_app.command_runner import CalendarCommandRunner
 from apps.calendar_app.database import Base
+from apps.calendar_app.events import CalendarEvent, CalendarEventBus
 from apps.calendar_app.mcp_server import create_mcp_server
 from apps.calendar_app.mcp_tools import (
     calendar_event_service_scope,
     cancel_calendar_event_with_service,
+    create_calendar_event_tool,
     create_calendar_event_with_service,
+    delete_calendar_event_with_service,
     list_calendar_events_with_service,
+    restore_calendar_event_with_service,
     search_calendar_events_with_service,
     update_calendar_event_with_service,
 )
@@ -65,6 +70,89 @@ async def test_calendar_mcp_server_registers_tools() -> None:
     assert cancel_tool.annotations.destructive_hint is False
     assert cancel_tool.annotations.idempotent_hint is False
     assert cancel_tool.annotations.open_world_hint is False
+
+    restore_tool = tools_by_name["restore_calendar_event"]
+    assert restore_tool.title == "Restore calendar event"
+    assert restore_tool.annotations is not None
+    assert restore_tool.annotations.read_only_hint is False
+
+    delete_tool = tools_by_name["delete_calendar_event"]
+    assert delete_tool.title == "Delete calendar event"
+    assert delete_tool.annotations is not None
+    assert delete_tool.annotations.read_only_hint is False
+    assert delete_tool.annotations.destructive_hint is True
+
+
+@pytest.mark.anyio
+async def test_calendar_mcp_mutations_publish_events_after_commit() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    session_factory: sessionmaker[Session] = sessionmaker(bind=engine, expire_on_commit=False)
+    event_bus = CalendarEventBus()
+    runner = CalendarCommandRunner(session_factory, event_bus)
+    subscription = event_bus.subscribe()
+    create_tool = create_calendar_event_tool(session_factory, runner)
+
+    created = create_tool(
+        title="Planning",
+        start_at=datetime(2026, 8, 26, 10, 0),
+        end_at=datetime(2026, 8, 26, 11, 0),
+    )
+    assert await subscription.get() == CalendarEvent(
+        action="created",
+        event_id=created["id"],
+        status=CalendarEventStatus.CONFIRMED,
+    )
+
+    updated = update_calendar_event_with_service(
+        session_factory,
+        command_runner=runner,
+        event_id=created["id"],
+        title="Updated planning",
+    )
+    assert updated["title"] == "Updated planning"
+    assert await subscription.get() == CalendarEvent(
+        action="updated",
+        event_id=created["id"],
+        status=CalendarEventStatus.CONFIRMED,
+    )
+
+    cancelled = cancel_calendar_event_with_service(
+        session_factory,
+        command_runner=runner,
+        event_id=created["id"],
+    )
+    assert cancelled["status"] == "cancelled"
+    assert await subscription.get() == CalendarEvent(
+        action="cancelled",
+        event_id=created["id"],
+        status=CalendarEventStatus.CANCELLED,
+    )
+
+    restored = restore_calendar_event_with_service(
+        session_factory,
+        command_runner=runner,
+        event_id=created["id"],
+    )
+    assert restored["status"] == "confirmed"
+    assert await subscription.get() == CalendarEvent(
+        action="restored",
+        event_id=created["id"],
+        status=CalendarEventStatus.CONFIRMED,
+    )
+
+    deleted = delete_calendar_event_with_service(
+        session_factory,
+        command_runner=runner,
+        event_id=created["id"],
+    )
+    assert deleted == {"id": created["id"], "deleted": True}
+    assert await subscription.get() == CalendarEvent(
+        action="deleted",
+        event_id=created["id"],
+    )
+
+    event_bus.unsubscribe(subscription)
 
 
 def test_calendar_mcp_service_scope_uses_session_factory_per_call() -> None:

@@ -4,6 +4,7 @@ from typing import cast
 from fastapi import Request
 from sqlalchemy.orm import Session, sessionmaker
 
+from apps.calendar_app.command_runner import CalendarCommandRunner
 from apps.calendar_app.database import session_scope
 from apps.calendar_app.events import CalendarEventBus
 from apps.calendar_app.repositories import CalendarEventRepository
@@ -30,3 +31,7 @@ def get_event_service(request: Request) -> Generator[CalendarEventService]:
 
 def get_calendar_event_bus(request: Request) -> CalendarEventBus:
     return cast(CalendarEventBus, request.app.state.calendar_event_bus)
+
+
+def get_calendar_command_runner(request: Request) -> CalendarCommandRunner:
+    return cast(CalendarCommandRunner, request.app.state.calendar_command_runner)

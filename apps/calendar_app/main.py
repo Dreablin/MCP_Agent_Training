@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from nicegui import ui
 
 from apps.calendar_app.api import events_router
+from apps.calendar_app.command_runner import CalendarCommandRunner
 from apps.calendar_app.config import CalendarAppSettings, get_settings
 from apps.calendar_app.database import build_engine, build_session_factory
 from apps.calendar_app.events import CalendarEventBus
@@ -37,7 +38,9 @@ def create_app(settings: CalendarAppSettings | None = None, *, include_ui: bool 
     )
     session_factory = build_session_factory(engine)
 
-    mcp = create_mcp_server(session_factory)
+    event_bus = CalendarEventBus()
+    command_runner = CalendarCommandRunner(session_factory, event_bus)
+    mcp = create_mcp_server(session_factory, command_runner)
     mcp_app = mcp.streamable_http_app(streamable_http_path="/")
 
     @asynccontextmanager
@@ -52,7 +55,8 @@ def create_app(settings: CalendarAppSettings | None = None, *, include_ui: bool 
     app.state.settings = resolved_settings
     app.state.engine = engine
     app.state.session_factory = session_factory
-    app.state.calendar_event_bus = CalendarEventBus()
+    app.state.calendar_event_bus = event_bus
+    app.state.calendar_command_runner = command_runner
     app.state.mcp_server = mcp
 
     register_error_handlers(app)
@@ -65,6 +69,7 @@ def create_app(settings: CalendarAppSettings | None = None, *, include_ui: bool 
             resolved_settings,
             app.state.session_factory,
             app.state.calendar_event_bus,
+            app.state.calendar_command_runner,
         )
         ui.run_with(app)
 

@@ -20,7 +20,7 @@ The suite intentionally demonstrates three different MCP integration styles. The
 | --- | --- | --- | --- |
 | Email | Separate MCP server process | Streamable HTTP | Existing Email REST API |
 | Calendar | MCP embedded in the app process | Streamable HTTP mounted under FastAPI | Calendar service layer and shared session factory |
-| Todo | Local child process launched by the agent | stdio JSON-RPC | Todo service layer and shared SQLite database |
+| Todo | Local child process launched by the agent | stdio JSON-RPC | Todo App REST API |
 
 The Email MCP server is a separate Uvicorn process. It owns its own `MCPServer` instance
 and exposes it through Streamable HTTP, but it treats the Email app as an external
@@ -40,8 +40,8 @@ without introducing a second server process or an HTTP hop back into the same ap
 The Todo MCP server is a local stdio process. An MCP client starts it as a child
 process, sends JSON-RPC messages through stdin, and reads responses from stdout.
 It does not expose a port, does not run Uvicorn, and is not mounted into FastAPI.
-Todo MCP tools use the Todo service layer with a short-lived SQLAlchemy session per tool
-call, using the same SQLite database as the Todo app.
+Todo MCP tools call the Todo App REST API, so the Todo App remains the single owner of
+its database transactions and event notifications.
 
 ## Documentation
 
