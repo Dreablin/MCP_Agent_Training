@@ -94,6 +94,33 @@ Response:
 - `201 Created`
 - body: Email Message.
 
+### `POST /api/messages/send`
+
+Create a sent email message. The created message is stored in `sent` and marked
+as read immediately.
+
+Request body:
+
+```json
+{
+  "sender_name": "Email app",
+  "sender_email": "me@example.test",
+  "recipient_email": "anna@example.test",
+  "subject": "Project update",
+  "body": "The project update is ready.",
+  "received_at": "2026-08-06T10:00:00-05:00"
+}
+```
+
+Optional field:
+
+- `id`: UUID string.
+
+Response:
+
+- `201 Created`
+- body: Email Message with `folder = "sent"` and `is_read = true`.
+
 ### `GET /api/messages`
 
 Get a list of messages. Results are ordered by `received_at` ascending, so the oldest
@@ -173,6 +200,32 @@ Response `200`:
   }
 ]
 ```
+
+### `GET /api/messages/events`
+
+Subscribe to message change events with Server-Sent Events.
+
+The stream sends a `connected` event when the subscription is established.
+After message data changes, the stream sends `messages_changed` events.
+
+Event data:
+
+```json
+{
+  "action": "created",
+  "message_id": "00000000-0000-4000-8000-000000000101",
+  "folder": "inbox"
+}
+```
+
+Possible `action` values:
+
+- `created`
+- `sent`
+- `updated`
+- `moved`
+- `deleted`
+- `trash_emptied`
 
 ### `GET /api/messages/{message_id}`
 

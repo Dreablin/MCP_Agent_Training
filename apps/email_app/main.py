@@ -7,6 +7,7 @@ from nicegui import ui
 from apps.email_app.api import messages_router
 from apps.email_app.config import EmailAppSettings, get_settings
 from apps.email_app.database import build_engine, build_session_factory
+from apps.email_app.events import EmailEventBus
 from apps.email_app.models import EmailMessage  # noqa: F401
 from apps.email_app.ui.pages import register_pages
 from shared.database_setup import initialize_database_if_missing
@@ -36,13 +37,14 @@ def create_app(settings: EmailAppSettings | None = None, *, include_ui: bool = F
     )
     app.state.engine = engine
     app.state.session_factory = build_session_factory(engine)
+    app.state.email_event_bus = EmailEventBus()
 
     register_error_handlers(app)
     register_health_route(app, resolved_settings.app_name, APP_VERSION)
     app.include_router(messages_router)
 
     if include_ui:
-        register_pages(resolved_settings, app.state.session_factory)
+        register_pages(resolved_settings, app.state.session_factory, app.state.email_event_bus)
         ui.run_with(app)
 
     return app

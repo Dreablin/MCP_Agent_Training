@@ -1,8 +1,11 @@
+from collections.abc import AsyncIterator
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi.sse import EventSourceResponse, ServerSentEvent
 
-from apps.todo_app.api.dependencies import get_task_service
+from apps.todo_app.api.dependencies import get_task_event_bus, get_task_service
+from apps.todo_app.events import TaskEventBus
 from apps.todo_app.models import TaskPriority, TaskStatus
 from apps.todo_app.repositories import TaskSearch
 from apps.todo_app.schemas import TaskCreate, TaskRead, TaskUpdate
@@ -37,6 +40,23 @@ def list_tasks(
             offset=offset,
         )
     )
+
+
+@router.get("/events", response_class=EventSourceResponse)
+async def stream_task_events(
+    request: Request,
+    event_bus: Annotated[TaskEventBus, Depends(get_task_event_bus)],
+) -> AsyncIterator[ServerSentEvent]:
+    subscription = event_bus.subscribe()
+    try:
+        yield ServerSentEvent(event="connected", data={"status": "ok"})
+        while True:
+            event = await subscription.get()
+            if await request.is_disconnected():
+                break
+            yield ServerSentEvent(event="tasks_changed", data=event.as_dict())
+    finally:
+        event_bus.unsubscribe(subscription)
 
 
 @router.get("/{task_id}", response_model=TaskRead)

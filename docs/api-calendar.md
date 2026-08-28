@@ -165,6 +165,29 @@ Response:
 - `200 OK`: array of overlapping Calendar Event objects.
 - `422 Unprocessable Entity`: invalid range.
 
+### `GET /api/events/events`
+
+Stream calendar event changes as Server-Sent Events.
+
+Events:
+
+- `connected`: emitted when the stream is opened.
+- `events_changed`: emitted after event create, update, cancel, restore, or delete operations.
+
+`events_changed` data:
+
+```json
+{
+  "action": "cancelled",
+  "event_id": "00000000-0000-4000-8000-000000000301",
+  "status": "cancelled"
+}
+```
+
+Response:
+
+- `200 OK`: SSE stream.
+
 ### `GET /api/events/{event_id}`
 
 Get an event by ID.

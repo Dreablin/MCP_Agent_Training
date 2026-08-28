@@ -9,6 +9,7 @@ from nicegui import ui
 from apps.calendar_app.api import events_router
 from apps.calendar_app.config import CalendarAppSettings, get_settings
 from apps.calendar_app.database import build_engine, build_session_factory
+from apps.calendar_app.events import CalendarEventBus
 from apps.calendar_app.mcp_server import create_mcp_server
 from apps.calendar_app.models import CalendarEvent  # noqa: F401
 from apps.calendar_app.ui.pages import register_pages
@@ -51,6 +52,7 @@ def create_app(settings: CalendarAppSettings | None = None, *, include_ui: bool 
     app.state.settings = resolved_settings
     app.state.engine = engine
     app.state.session_factory = session_factory
+    app.state.calendar_event_bus = CalendarEventBus()
     app.state.mcp_server = mcp
 
     register_error_handlers(app)
@@ -59,7 +61,11 @@ def create_app(settings: CalendarAppSettings | None = None, *, include_ui: bool 
     app.mount("/mcp", mcp_app)
 
     if include_ui:
-        register_pages(resolved_settings, app.state.session_factory)
+        register_pages(
+            resolved_settings,
+            app.state.session_factory,
+            app.state.calendar_event_bus,
+        )
         ui.run_with(app)
 
     return app

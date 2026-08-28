@@ -2,10 +2,12 @@ from collections.abc import Callable
 from typing import TypeVar
 
 from nicegui import ui
+from nicegui.element import Element
 from sqlalchemy.orm import Session, sessionmaker
 
 from apps.todo_app.config import TodoAppSettings
 from apps.todo_app.database import session_scope
+from apps.todo_app.events import TaskEventBus
 from apps.todo_app.models import TaskPriority, TaskStatus
 from apps.todo_app.repositories import TaskRepository, TaskSearch
 from apps.todo_app.schemas import TaskCreate, TaskRead, TaskUpdate
@@ -39,11 +41,20 @@ TASK_PRIORITY_CLASSES = {
 }
 
 
-def register_pages(settings: TodoAppSettings, session_factory: sessionmaker[Session]) -> None:
+def register_pages(
+    settings: TodoAppSettings,
+    session_factory: sessionmaker[Session],
+    event_bus: TaskEventBus,
+) -> None:
     def run_with_service(action: Callable[[TaskService], T]) -> T:
+        service: TaskService | None = None
         with session_scope(session_factory) as session:
             service = TaskService(TaskRepository(session))
-            return action(service)
+            result = action(service)
+        assert service is not None
+        for event in service.pull_events():
+            event_bus.publish(event)
+        return result
 
     def notify_error(exc: Exception) -> None:
         if isinstance(exc, AppError):
@@ -54,6 +65,10 @@ def register_pages(settings: TodoAppSettings, session_factory: sessionmaker[Sess
     @ui.page("/")
     def index() -> None:
         selected_view = "open"
+        current_view = "tasks"
+        header_container: Element | None = None
+        tabs_container: Element | None = None
+        list_container: Element | None = None
         last_action = "Tasks are ready."
 
         ui.add_head_html(
@@ -388,7 +403,7 @@ def register_pages(settings: TodoAppSettings, session_factory: sessionmaker[Sess
                 return
 
             last_action = success
-            render_tasks()
+            refresh_tasks()
             ui.notify(success, type="positive")
 
         def task_count_label(count: int) -> str:
@@ -398,7 +413,7 @@ def register_pages(settings: TodoAppSettings, session_factory: sessionmaker[Sess
         def set_selected_view(view: str) -> None:
             nonlocal selected_view
             selected_view = view
-            render_tasks()
+            refresh_tasks()
 
         def render_task_tabs(counts: dict[str, int]) -> None:
             with ui.row().classes("task-tabs"):
@@ -482,9 +497,20 @@ def register_pages(settings: TodoAppSettings, session_factory: sessionmaker[Sess
                     return
 
                 for task in tasks:
-                    render_task_card(task, render_tasks)
+                    render_task_card(task, refresh_tasks)
 
-        def render_tasks() -> None:
+        def refresh_tasks() -> None:
+            if current_view == "tasks":
+                refresh_tasks_content()
+
+        def refresh_tasks_content() -> None:
+            if (
+                header_container is None
+                or tabs_container is None
+                or list_container is None
+            ):
+                return
+
             try:
                 counts = count_tasks_by_view()
                 tasks = list_tasks_for_view(selected_view)
@@ -492,43 +518,53 @@ def register_pages(settings: TodoAppSettings, session_factory: sessionmaker[Sess
                 notify_error(exc)
                 return
 
-            main_container.clear()
-            with main_container, ui.column().classes("todo-view"):
-                with ui.column().classes("todo-header"):
-                    ui.label("Tasks").classes("todo-title")
-                    view_summary = (
-                        f"{TASK_VIEW_LABELS[selected_view]}: {task_count_label(len(tasks))}"
-                    )
-                    ui.label(view_summary).classes("todo-meta")
+            header_container.clear()
+            with header_container:
+                ui.label("Tasks").classes("todo-title")
+                view_summary = f"{TASK_VIEW_LABELS[selected_view]}: {task_count_label(len(tasks))}"
+                ui.label(view_summary).classes("todo-meta")
 
+            tabs_container.clear()
+            with tabs_container:
                 render_task_tabs(counts)
 
-                with ui.column().classes("task-list"):
-                    if selected_view == "open":
-                        in_progress_tasks = [
-                            task for task in tasks if task.status == TaskStatus.IN_PROGRESS
-                        ]
-                        not_started_tasks = [
-                            task for task in tasks if task.status == TaskStatus.OPEN
-                        ]
-                        render_task_section("In Progress", in_progress_tasks)
-                        ui.separator().classes("task-list-separator")
-                        render_task_section("Not Started", not_started_tasks)
-                        return
+            list_container.clear()
+            with list_container:
+                if selected_view == "open":
+                    in_progress_tasks = [
+                        task for task in tasks if task.status == TaskStatus.IN_PROGRESS
+                    ]
+                    not_started_tasks = [
+                        task for task in tasks if task.status == TaskStatus.OPEN
+                    ]
+                    render_task_section("In Progress", in_progress_tasks)
+                    ui.separator().classes("task-list-separator")
+                    render_task_section("Not Started", not_started_tasks)
+                    return
 
-                    if not tasks:
-                        with ui.column().classes("empty-task-view"):
-                            ui.icon("task_alt", size="42px").classes("text-grey-5")
-                            ui.label("No tasks in this tab yet.").classes("text-subtitle1")
-                            ui.label("Add a new task or switch tabs.").classes(
-                                "text-caption"
-                            )
-                        return
+                if not tasks:
+                    with ui.column().classes("empty-task-view"):
+                        ui.icon("task_alt", size="42px").classes("text-grey-5")
+                        ui.label("No tasks in this tab yet.").classes("text-subtitle1")
+                        ui.label("Add a new task or switch tabs.").classes("text-caption")
+                    return
 
-                    for task in tasks:
-                        render_task_card(task, render_tasks)
+                for task in tasks:
+                    render_task_card(task, refresh_tasks)
+
+        def render_tasks() -> None:
+            nonlocal current_view, header_container, tabs_container, list_container
+            current_view = "tasks"
+            main_container.clear()
+            with main_container, ui.column().classes("todo-view"):
+                header_container = ui.column().classes("todo-header")
+                tabs_container = ui.element("div")
+                list_container = ui.column().classes("task-list")
+            refresh_tasks_content()
 
         def render_info() -> None:
+            nonlocal current_view
+            current_view = "info"
             main_container.clear()
             with main_container, ui.column().classes("info-view"):
                 with ui.card().classes("w-full max-w-xl"):
@@ -566,7 +602,7 @@ def register_pages(settings: TodoAppSettings, session_factory: sessionmaker[Sess
             selected_view = "open"
             last_action = "Task created."
             create_task_dialog.close()
-            render_tasks()
+            refresh_tasks()
             ui.notify(last_action, type="positive")
 
         with ui.dialog() as create_task_dialog, ui.card().classes("create-dialog-card"):
@@ -590,5 +626,21 @@ def register_pages(settings: TodoAppSettings, session_factory: sessionmaker[Sess
 
             main_container = ui.element("main").classes("todo-main")
 
+        ui.on("todo-tasks-changed", lambda: refresh_tasks())
+        ui.run_javascript(
+            """
+            (() => {
+                if (window.todoAppEventSource) {
+                    window.todoAppEventSource.close();
+                }
+                const source = new EventSource('/api/tasks/events');
+                source.addEventListener('tasks_changed', () => {
+                    emitEvent('todoTasksChanged');
+                });
+                window.addEventListener('beforeunload', () => source.close(), { once: true });
+                window.todoAppEventSource = source;
+            })();
+            """
+        )
         reset_create_form()
         render_tasks()

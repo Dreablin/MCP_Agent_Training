@@ -58,6 +58,23 @@ def test_service_create_sent_message(service: EmailMessageService) -> None:
     assert [message.id for message in sent_messages] == [created.id]
 
 
+def test_service_records_message_change_events(service: EmailMessageService) -> None:
+    created = service.create(message_payload())
+    read = service.mark_read(created.id, True)
+    service.delete_permanently(created.id)
+
+    events = service.pull_events()
+
+    assert [event.action for event in events] == ["created", "updated", "deleted"]
+    assert [event.message_id for event in events] == [created.id, read.id, created.id]
+    assert [event.folder for event in events] == [
+        EmailFolder.INBOX,
+        EmailFolder.INBOX,
+        EmailFolder.INBOX,
+    ]
+    assert service.pull_events() == []
+
+
 def test_service_read_and_trash_flow(service: EmailMessageService) -> None:
     created = service.create(message_payload())
 
