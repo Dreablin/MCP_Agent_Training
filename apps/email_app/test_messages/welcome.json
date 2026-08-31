@@ -1,0 +1,8 @@
+{
+  "date": "2026-08-30T09:15:00-05:00",
+  "sender_name": "Training Team",
+  "sender_email": "training@example.test",
+  "recipient_email": "me@example.test",
+  "subject": "Welcome to the email training",
+  "body": "This is the first sample message loaded by Receive All."
+}

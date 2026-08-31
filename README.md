@@ -2,17 +2,23 @@
 
 Agent Training Suite is a local educational project for practicing MCP integration and agentic workflows on top of existing applications.
 
-The repository contains three small, independent web applications. They are intentionally simple, local-only, and built as regular applications first. This makes them useful as a training base for MCP servers and agent scenarios that integrate with existing app boundaries instead of replacing the applications themselves.
+The repository contains three small, independent web applications. They are intentionally simple, local-only, and built as regular applications first. This makes them useful as a training base: learners can later build MCP servers and agent scenarios that interact with the apps through their REST APIs, without changing the application internals.
 
 The project is not a production system. It does not include real email delivery, external service integrations, authentication, cloud deployment, or multi-user support.
 
 ## Applications
 
-- **Email app**: a fake local mailbox for creating, reading, searching, moving to trash, and deleting email-like messages.
+- **Email app**: a local mailbox for creating, reading, searching, moving to trash, and deleting email-like messages. The **Receive All** button loads all JSON test messages from `apps/email_app/test_messages/` into Inbox as unread messages.
 - **Todo App**: a local task tracker for creating tasks, changing status and priority, completing tasks, and archiving them.
 - **Calendar App**: a local calendar for creating events, changing schedules, cancelling/restoring events, deleting events, and checking overlaps. Calendar times are treated as local naive values without timezone conversion.
 
-## MCP Integration Approaches
+## Branches
+
+- `main`: the base applications.
+- `MCP`: MCP servers for the applications.
+- `Agent`: a basic agent for handling requests through the MCP servers.
+
+## MCP
 
 The suite intentionally demonstrates three different MCP integration styles. They are not competing implementations of the same design; they are separate training examples for different deployment and ownership boundaries.
 

@@ -1,11 +1,20 @@
 from __future__ import annotations
 
 import builtins
+import json
+from pathlib import Path
+
+from pydantic import ValidationError
 
 from apps.email_app.events import EmailEvent
 from apps.email_app.models import EmailFolder
 from apps.email_app.repositories import EmailMessageRepository, EmailSearch
-from apps.email_app.schemas import EmailFolderRead, EmailMessageCreate, EmailMessageRead
+from apps.email_app.schemas import (
+    EmailFolderRead,
+    EmailMessageCreate,
+    EmailMessageImport,
+    EmailMessageRead,
+)
 from shared.errors import NotFoundError, ValidationAppError
 
 FOLDER_LABELS: dict[EmailFolder, str] = {
@@ -35,6 +44,21 @@ class EmailMessageService:
         )
         self._record_event("sent", message)
         return message
+
+    def receive_all_from_directory(self, source_dir: Path) -> builtins.list[EmailMessageRead]:
+        messages = self._load_messages_from_directory(source_dir)
+        created_messages: builtins.list[EmailMessageRead] = []
+        for message in sorted(messages, key=lambda item: item.date):
+            created_message = self._to_read_model(
+                self._repository.create(
+                    message.to_create_payload(),
+                    folder=EmailFolder.INBOX,
+                    is_read=False,
+                )
+            )
+            self._record_event("created", created_message)
+            created_messages.append(created_message)
+        return created_messages
 
     def list(self, search: EmailSearch | None = None) -> list[EmailMessageRead]:
         return [self._to_read_model(message) for message in self._repository.list(search)]
@@ -104,6 +128,40 @@ class EmailMessageService:
         self._events.append(
             EmailEvent(action=action, message_id=message.id, folder=message.folder)
         )
+
+    @staticmethod
+    def _load_messages_from_directory(source_dir: Path) -> builtins.list[EmailMessageImport]:
+        if not source_dir.is_dir():
+            raise ValidationAppError(
+                "Message source directory was not found",
+                details={"path": str(source_dir)},
+            )
+
+        messages: builtins.list[EmailMessageImport] = []
+        for path in sorted(source_dir.glob("*.json")):
+            try:
+                raw_content = json.loads(path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as exc:
+                raise ValidationAppError(
+                    "Message source file is not valid JSON",
+                    details={"path": str(path), "error": str(exc)},
+                ) from exc
+
+            raw_messages = raw_content if isinstance(raw_content, list) else [raw_content]
+            for raw_message in raw_messages:
+                if not isinstance(raw_message, dict):
+                    raise ValidationAppError(
+                        "Message source file must contain an object or an array of objects",
+                        details={"path": str(path)},
+                    )
+                try:
+                    messages.append(EmailMessageImport.model_validate(raw_message))
+                except ValidationError as exc:
+                    raise ValidationAppError(
+                        "Message source file has invalid message data",
+                        details={"path": str(path), "error": str(exc)},
+                    ) from exc
+        return messages
 
     @staticmethod
     def _to_read_model(message: object) -> EmailMessageRead:
