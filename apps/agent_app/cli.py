@@ -109,23 +109,27 @@ async def run_turn(
     next_input: AgentStateInput = state
 
     output.write("[llm] thinking...\n")
-    while True:
-        interrupted = False
-        async for update in runtime.graph.astream(next_input, config, stream_mode="updates"):
-            interrupt_payload = interrupt_from_update(update)
-            if interrupt_payload is not None:
-                answer = prompt_for_human_answer(interrupt_payload, input_func, output)
-                runtime.audit_log.resume(run_id, thread_id, dict(answer))
-                next_input = Command(resume=answer)
-                output.write("[llm] resuming...\n")
-                interrupted = True
-                break
+    try:
+        while True:
+            interrupted = False
+            async for update in runtime.graph.astream(next_input, config, stream_mode="updates"):
+                interrupt_payload = interrupt_from_update(update)
+                if interrupt_payload is not None:
+                    answer = prompt_for_human_answer(interrupt_payload, input_func, output)
+                    runtime.audit_log.resume(run_id, thread_id, dict(answer))
+                    next_input = Command(resume=answer)
+                    output.write("[llm] resuming...\n")
+                    interrupted = True
+                    break
 
-            rendered = render_update(update, output)
-            if rendered:
-                final_response = rendered
-        if not interrupted:
-            return final_response
+                rendered = render_update(update, output)
+                if rendered:
+                    final_response = rendered
+            if not interrupted:
+                return final_response
+    except Exception as exc:
+        runtime.audit_log.fail_run(run_id, thread_id, exc)
+        raise
 
 
 AgentStateInput = AgentState | Command[Any]

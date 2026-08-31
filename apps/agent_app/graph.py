@@ -42,7 +42,13 @@ class AgentGraphRuntime:
         config = {"configurable": {"thread_id": resolved_thread_id}}
         state = initial_state(user_input, resolved_thread_id, run_id)
         self.audit_log.start_run(run_id, resolved_thread_id, user_input)
-        result = self.graph.invoke(state, config)
+        try:
+            result = self.graph.invoke(state, config)
+        except GraphInterrupt:
+            raise
+        except Exception as exc:
+            self.audit_log.fail_run(run_id, resolved_thread_id, exc)
+            raise
         return {"thread_id": resolved_thread_id, "run_id": run_id, "state": result}
 
     async def arun(self, user_input: str, thread_id: str | None = None) -> dict[str, Any]:
@@ -51,7 +57,13 @@ class AgentGraphRuntime:
         config = {"configurable": {"thread_id": resolved_thread_id}}
         state = initial_state(user_input, resolved_thread_id, run_id)
         self.audit_log.start_run(run_id, resolved_thread_id, user_input)
-        result = await self.graph.ainvoke(state, config)
+        try:
+            result = await self.graph.ainvoke(state, config)
+        except GraphInterrupt:
+            raise
+        except Exception as exc:
+            self.audit_log.fail_run(run_id, resolved_thread_id, exc)
+            raise
         return {"thread_id": resolved_thread_id, "run_id": run_id, "state": result}
 
     def resume(
@@ -63,7 +75,13 @@ class AgentGraphRuntime:
         self.ensure_sync_allowed()
         config = {"configurable": {"thread_id": thread_id}}
         self.audit_log.resume(run_id, thread_id, dict(answer))
-        result = self.graph.invoke(Command(resume=answer), config)
+        try:
+            result = self.graph.invoke(Command(resume=answer), config)
+        except GraphInterrupt:
+            raise
+        except Exception as exc:
+            self.audit_log.fail_run(run_id, thread_id, exc)
+            raise
         return {"thread_id": thread_id, "run_id": run_id, "state": result}
 
     async def aresume(
@@ -74,7 +92,13 @@ class AgentGraphRuntime:
     ) -> dict[str, Any]:
         config = {"configurable": {"thread_id": thread_id}}
         self.audit_log.resume(run_id, thread_id, dict(answer))
-        result = await self.graph.ainvoke(Command(resume=answer), config)
+        try:
+            result = await self.graph.ainvoke(Command(resume=answer), config)
+        except GraphInterrupt:
+            raise
+        except Exception as exc:
+            self.audit_log.fail_run(run_id, thread_id, exc)
+            raise
         return {"thread_id": thread_id, "run_id": run_id, "state": result}
 
     def ensure_sync_allowed(self) -> None:
@@ -957,6 +981,18 @@ def build_sqlite_checkpointer(checkpoint_db_path: Path) -> Any:
     return checkpointer
 
 
+@asynccontextmanager
+async def build_async_sqlite_checkpointer(
+    checkpoint_db_path: Path,
+) -> AsyncIterator[Any]:
+    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+    checkpoint_db_path.parent.mkdir(parents=True, exist_ok=True)
+    async with AsyncSqliteSaver.from_conn_string(str(checkpoint_db_path)) as checkpointer:
+        await checkpointer.setup()
+        yield checkpointer
+
+
 def create_runtime(
     model: ToolBindableChatModel,
     tools: Sequence[BaseTool | Any],
@@ -976,16 +1012,17 @@ async def create_async_runtime(
     tools: Sequence[BaseTool | Any],
     settings: AgentAppSettings | None = None,
 ) -> AsyncIterator[AgentGraphRuntime]:
-    from langgraph.checkpoint.memory import InMemorySaver
-
     resolved_settings = settings or AgentAppSettings()
     resolved_settings.ensure_data_dir()
     audit_log = AgentAuditLog(resolved_settings.audit_db_path)
     audit_log.setup()
-    yield build_agent_graph(
-        model,
-        tools,
-        audit_log,
-        checkpointer=InMemorySaver(),
-        allow_sync=False,
-    )
+    async with build_async_sqlite_checkpointer(
+        resolved_settings.checkpoint_db_path
+    ) as checkpointer:
+        yield build_agent_graph(
+            model,
+            tools,
+            audit_log,
+            checkpointer=checkpointer,
+            allow_sync=False,
+        )

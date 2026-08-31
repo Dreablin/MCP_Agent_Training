@@ -18,6 +18,7 @@ from apps.agent_app.graph import (
     build_agent_graph,
     build_sqlite_checkpointer,
     compile_agent_graph,
+    create_async_runtime,
     format_tool_error_for_llm,
     initial_state,
     merge_state_for_audit,
@@ -787,6 +788,59 @@ def test_sqlite_checkpointer_can_be_created(tmp_path: Path) -> None:
     assert checkpointer is not None
 
 
+def test_async_runtime_persists_checkpoints_to_configured_sqlite_database(
+    tmp_path: Path,
+) -> None:
+    settings = AgentAppSettings(
+        checkpoint_db_path=tmp_path / "agent_checkpoints.db",
+        audit_db_path=tmp_path / "agent_debug.db",
+    )
+    first_model = ScriptedChatModel([AIMessage(content="Checkpoint saved.")])
+    second_model = ScriptedChatModel([AIMessage(content="History restored.")])
+
+    async def run() -> tuple[dict[str, Any], dict[str, Any]]:
+        async with create_async_runtime(first_model, [], settings) as runtime:
+            first_response = await runtime.arun("Hello", thread_id="persistent-thread")
+        async with create_async_runtime(second_model, [], settings) as runtime:
+            second_response = await runtime.arun("Continue", thread_id="persistent-thread")
+        return first_response, second_response
+
+    first_response, second_response = asyncio_run(run())
+
+    with sqlite3.connect(settings.checkpoint_db_path) as connection:
+        checkpoint_count = connection.execute("select count(*) from checkpoints").fetchone()[0]
+
+    second_turn_human_messages = [
+        message.content
+        for message in second_model.seen_messages[0]
+        if isinstance(message, HumanMessage)
+    ]
+
+    assert first_response["state"]["status"] == "completed"
+    assert second_response["state"]["status"] == "completed"
+    assert checkpoint_count > 0
+    assert second_turn_human_messages == ["Hello", "Continue"]
+
+
+def test_failed_runtime_marks_audit_run_as_failed(tmp_path: Path) -> None:
+    audit_log = create_audit_log(tmp_path)
+    runtime = build_agent_graph(
+        FailingChatModel(),
+        [],
+        audit_log,
+        checkpointer=InMemorySaver(),
+    )
+
+    with pytest.raises(RuntimeError, match="LLM unavailable"):
+        runtime.run("Hello", thread_id="failed-thread")
+
+    with sqlite3.connect(audit_log.db_path) as connection:
+        status = connection.execute("select status from agent_runs").fetchone()[0]
+
+    assert status == "failed"
+    assert count_event_rows(audit_log.db_path, "run_failed") == 1
+
+
 def test_convert_mcp_tool_content_prefers_structured_content() -> None:
     class TextBlock:
         text = "text fallback"
@@ -856,6 +910,14 @@ class ScriptedChatModel:
         response = self.responses[self.invocation_count]
         self.invocation_count += 1
         return response
+
+
+class FailingChatModel:
+    def bind_tools(self, tools: Sequence[StructuredTool | Any]) -> "FailingChatModel":
+        return self
+
+    def invoke(self, messages: list[AnyMessage]) -> AIMessage:
+        raise RuntimeError("LLM unavailable")
 
 
 class FakeToolTracker:

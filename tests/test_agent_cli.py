@@ -1,8 +1,10 @@
+import sqlite3
 from collections.abc import Sequence
 from io import StringIO
 from pathlib import Path
 from typing import Any
 
+import pytest
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 from langgraph.checkpoint.memory import InMemorySaver
@@ -386,6 +388,30 @@ def test_cli_async_runtime_supports_async_streaming(tmp_path: Path) -> None:
     assert "Async runtime works." in output.getvalue()
 
 
+def test_run_turn_marks_audit_run_as_failed_on_graph_error(tmp_path: Path) -> None:
+    audit_log = create_audit_log(tmp_path)
+    runtime = build_agent_graph(
+        FailingChatModel(),
+        [],
+        audit_log,
+        checkpointer=InMemorySaver(),
+    )
+
+    with pytest.raises(RuntimeError, match="LLM unavailable"):
+        asyncio_run(run_turn(runtime, "Hello", "cli-thread", output=StringIO()))
+
+    with sqlite3.connect(audit_log.db_path) as connection:
+        status = connection.execute(
+            "select status from agent_runs order by started_at desc limit 1"
+        ).fetchone()[0]
+        failure_events = connection.execute(
+            "select count(*) from agent_events where event_type = 'run_failed'"
+        ).fetchone()[0]
+
+    assert status == "failed"
+    assert failure_events == 1
+
+
 def test_exception_messages_unpack_exception_groups() -> None:
     exc = ExceptionGroup(
         "outer",
@@ -426,6 +452,14 @@ class ScriptedChatModel:
         response = self.responses[self.invocation_count]
         self.invocation_count += 1
         return response
+
+
+class FailingChatModel:
+    def bind_tools(self, tools: Sequence[StructuredTool | Any]) -> "FailingChatModel":
+        return self
+
+    def invoke(self, messages: list[AnyMessage]) -> AIMessage:
+        raise RuntimeError("LLM unavailable")
 
 
 class FakeToolTracker:

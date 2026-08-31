@@ -95,6 +95,23 @@ class AgentAuditLog:
     def finish_run(self, run_id: str, status: str) -> None:
         self.update_run_status(run_id, status, finished=True)
 
+    def fail_run(
+        self,
+        run_id: str,
+        thread_id: str,
+        exc: Exception,
+        *,
+        node_name: str | None = None,
+    ) -> None:
+        self.event(
+            run_id,
+            thread_id,
+            "run_failed",
+            node_name=node_name,
+            payload={"error_type": type(exc).__name__, "error": str(exc)},
+        )
+        self.finish_run(run_id, "failed")
+
     def update_run_status(self, run_id: str, status: str, *, finished: bool = False) -> None:
         finished_at = now_utc().isoformat() if finished else None
         with self.connection() as connection:
