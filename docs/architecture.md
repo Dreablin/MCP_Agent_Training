@@ -134,12 +134,38 @@ Tool execution is a loop. After every tool result, including
 decide whether to correct the call, use another tool, ask for clarification, or
 finish.
 
-Before `ToolNode` runs, the graph enforces a simple execution policy:
-state-changing tools cannot be batched with any other tool calls. If the LLM
-emits a batch containing a state-changing tool, the batch is not executed; the
-graph returns `ToolMessage(status="error")` entries telling the model to re-plan
-and call one state-changing tool, then wait for its result. Read-only tool
-batches are allowed.
+Before `ToolNode` runs, a deterministic `PolicyEngine` evaluates the tool calls
+produced by the LLM. It does not call an LLM or MCP server. The current policy
+allows all known tools except `email_send_email`, which always requires an
+explicit human confirmation. When confirmation is required, the graph pauses in
+an `approval` node and shows the recipient, subject, and body before the MCP tool
+can run. Approval executes the original planned call; rejection appends a
+cancelled `ToolMessage` and returns control to the LLM without invoking MCP.
+If the LLM attempts `email_send_email` again in the same user request after a
+rejection, the policy returns `DENY` without opening another approval interrupt.
+The resulting tool message records `executed=false` and `retryable=false`.
+
+After a human rejects a protected action, the graph does not return directly to
+the normal tool-calling loop. A tools-disabled LLM node first creates a concise
+summary of verified progress and the cancelled action. The graph then interrupts
+again to ask the human what to do next. Their response is added as a new
+`HumanMessage`, preserving the context for the next LLM decision.
+
+Approval context is transient: it is tied to the exact `tool_call_id` that
+created it and is cleared after approval or rejection and at the start of every
+new user turn. This prevents a completed approval decision from affecting a
+later command in the same LangGraph thread. Rejected tool names are retained
+only for the current user request and reset when the next request starts. In the
+CLI, `1` approves and `2` cancels; unknown input is rejected by the prompt and
+does not resume the graph.
+
+The policy layer also enforces a simple execution constraint: state-changing
+tools cannot be batched with any other tool calls. If the LLM emits a batch
+containing a state-changing tool, the batch is not executed; the graph returns
+`ToolMessage(status="error")` entries telling the model to re-plan and call one
+state-changing tool, then wait for its result. Read-only tool batches are
+allowed. Policy evaluations and approval requests, approvals, and rejections are
+recorded in the audit event log.
 
 Human-in-the-loop is available for uncertainty, not blanket approval. The LLM can
 call the local `ask_human` tool when a request is ambiguous, required

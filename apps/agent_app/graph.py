@@ -16,13 +16,17 @@ from langgraph.types import Command, interrupt
 
 from apps.agent_app.audit import AgentAuditLog
 from apps.agent_app.config import AgentAppSettings
-from apps.agent_app.prompts import messages_with_system_prompt
-from apps.agent_app.state import AgentState, HumanAnswer
+from apps.agent_app.policy import PolicyDecision, PolicyEngine, PolicyResult
+from apps.agent_app.prompts import messages_for_rejection_follow_up, messages_with_system_prompt
+from apps.agent_app.state import AgentState, HumanAnswer, PendingToolPolicy
 
 
 class ToolBindableChatModel(Protocol):
     def bind_tools(self, tools: Sequence[BaseTool | Any]) -> Any:
         """Return a model/runnable configured for tool calling."""
+
+    def invoke(self, messages: list[AnyMessage]) -> AIMessage:
+        """Return a chat response without tool binding."""
 
 
 class AgentGraphRuntime:
@@ -89,6 +93,9 @@ def initial_state(user_input: str, thread_id: str, run_id: str) -> AgentState:
         "thread_id": thread_id,
         "user_input": user_input,
         "messages": [HumanMessage(content=user_input)],
+        "pending_tool_policy": None,
+        "approval_outcome": None,
+        "rejected_tool_names": [],
         "status": "running",
     }
 
@@ -124,6 +131,7 @@ def compile_agent_graph(
     model_with_tools = model.bind_tools(tools)
     resolved_allow_sync = allow_sync if allow_sync is not None else not has_async_only_tools(tools)
     tools_by_name = {tool.name: tool for tool in tools}
+    policy_engine = PolicyEngine()
 
     def ensure_metadata(state: AgentState, config: RunnableConfig) -> AgentState:
         run_id = state.get("run_id") or str(uuid4())
@@ -170,40 +178,123 @@ def compile_agent_graph(
         log_node_exit(audit_log, state, "llm", updates)
         return updates
 
-    def enforce_tool_policy(state: AgentState) -> AgentState:
-        log_node_enter(audit_log, state, "enforce_tool_policy")
+    def call_rejection_summary(state: AgentState) -> AgentState:
+        if not resolved_allow_sync:
+            msg = "Use async graph execution for runtimes with async-only tools."
+            raise RuntimeError(msg)
+        log_node_enter(audit_log, state, "rejection_summary")
+        response = model.invoke(messages_for_rejection_follow_up(state["messages"]))
+        updates: AgentState = {"messages": [response], "status": "running"}
+        log_node_exit(audit_log, state, "rejection_summary", updates)
+        return updates
+
+    async def acall_rejection_summary(state: AgentState) -> AgentState:
+        log_node_enter(audit_log, state, "rejection_summary")
+        summary_model: Any = model
+        if hasattr(summary_model, "ainvoke"):
+            response = cast(
+                AIMessage,
+                await summary_model.ainvoke(messages_for_rejection_follow_up(state["messages"])),
+            )
+        else:
+            response = cast(
+                AIMessage,
+                summary_model.invoke(messages_for_rejection_follow_up(state["messages"])),
+            )
+        updates: AgentState = {"messages": [response], "status": "running"}
+        log_node_exit(audit_log, state, "rejection_summary", updates)
+        return updates
+
+    def policy_engine_node(state: AgentState) -> AgentState:
+        log_node_enter(audit_log, state, "policy_engine")
         latest = latest_message_from_state(state)
         if not isinstance(latest, AIMessage) or not latest.tool_calls:
-            updates: AgentState = {"status": "running"}
-            log_node_exit(audit_log, state, "enforce_tool_policy", updates)
+            updates: AgentState = cleared_policy_updates()
+            log_node_exit(audit_log, state, "policy_engine", updates)
             return updates
 
         violation = state_changing_batch_violation(latest.tool_calls, tools_by_name)
-        if violation is None:
-            updates = {"status": "running"}
-            log_node_exit(audit_log, state, "enforce_tool_policy", updates)
+        if violation is not None:
+            audit_log.event(
+                state["run_id"],
+                state["thread_id"],
+                "tool_policy_violation",
+                node_name="policy_engine",
+                payload={"tool_calls": latest.tool_calls, "reason": violation},
+            )
+            updates = {
+                "messages": [
+                    ToolMessage(
+                        content=violation,
+                        name=str(tool_call.get("name", "")),
+                        tool_call_id=str(tool_call.get("id", "")),
+                        status="error",
+                    )
+                    for tool_call in latest.tool_calls
+                ],
+                **cleared_policy_updates(),
+            }
+            log_node_exit(audit_log, state, "policy_engine", updates)
             return updates
 
-        audit_log.event(
-            state["run_id"],
-            state["thread_id"],
-            "tool_policy_violation",
-            node_name="enforce_tool_policy",
-            payload={"tool_calls": latest.tool_calls, "reason": violation},
+        evaluated_calls = [
+            (cast(dict[str, Any], tool_call), policy_engine.evaluate(tool_call, state))
+            for tool_call in latest.tool_calls
+        ]
+        for tool_call, result in evaluated_calls:
+            audit_policy_evaluation(audit_log, state, tool_call, result)
+
+        denied_calls = [
+            (tool_call, result)
+            for tool_call, result in evaluated_calls
+            if result.decision is PolicyDecision.DENY
+        ]
+        if denied_calls:
+            updates = {
+                "messages": [
+                    ToolMessage(
+                        content=json.dumps(
+                            {
+                                "outcome": "denied_by_policy",
+                                "status": "denied",
+                                "executed": False,
+                                "retryable": False,
+                                "reason": result.reason,
+                            },
+                            ensure_ascii=False,
+                            sort_keys=True,
+                        ),
+                        name=str(tool_call.get("name", "")),
+                        tool_call_id=str(tool_call.get("id", "")),
+                        status="success",
+                    )
+                    for tool_call, result in denied_calls
+                ],
+                **cleared_policy_updates(),
+            }
+            log_node_exit(audit_log, state, "policy_engine", updates)
+            return updates
+
+        confirmation = next(
+            (
+                (tool_call, result)
+                for tool_call, result in evaluated_calls
+                if result.decision is PolicyDecision.CONFIRM
+            ),
+            None,
         )
-        updates = {
-            "messages": [
-                ToolMessage(
-                    content=violation,
-                    name=str(tool_call.get("name", "")),
-                    tool_call_id=str(tool_call.get("id", "")),
-                    status="error",
-                )
-                for tool_call in latest.tool_calls
-            ],
-            "status": "running",
-        }
-        log_node_exit(audit_log, state, "enforce_tool_policy", updates)
+        if confirmation is not None:
+            tool_call, result = confirmation
+            updates = {
+                "pending_tool_policy": pending_tool_policy(tool_call, result),
+                "approval_outcome": None,
+                "status": "running",
+            }
+            log_node_exit(audit_log, state, "policy_engine", updates)
+            return updates
+
+        updates = cleared_policy_updates()
+        log_node_exit(audit_log, state, "policy_engine", updates)
         return updates
 
     tool_node = ToolNode(
@@ -231,6 +322,135 @@ def compile_agent_graph(
         log_node_exit(audit_log, state, "ask_human", updates)
         return updates
 
+    def approval_node(state: AgentState) -> AgentState:
+        log_node_enter(audit_log, state, "approval")
+        pending = state.get("pending_tool_policy")
+        if not isinstance(pending, dict) or pending.get("decision") != PolicyDecision.CONFIRM.value:
+            updates: AgentState = {"status": "running"}
+            log_node_exit(audit_log, state, "approval", updates)
+            return updates
+
+        tool_call = latest_tool_call_by_id(state, str(pending.get("tool_call_id", "")))
+        if tool_call is None:
+            updates = {
+                "messages": [
+                    ToolMessage(
+                        content="Approval could not find the planned tool call.",
+                        name=str(pending.get("tool_name", "")),
+                        tool_call_id=str(pending.get("tool_call_id", "")),
+                        status="error",
+                    )
+                ],
+                "pending_tool_policy": None,
+                "approval_outcome": "rejected",
+                "status": "running",
+            }
+            log_node_exit(audit_log, state, "approval", updates)
+            return updates
+
+        payload = pending.get("display_payload")
+        approval_payload = dict(payload) if isinstance(payload, dict) else {}
+        try:
+            answer = interrupt(approval_payload)
+        except GraphInterrupt as exc:
+            audit_log.event(
+                state["run_id"],
+                state["thread_id"],
+                "approval_requested",
+                node_name="approval",
+                payload={
+                    "tool_name": tool_call["name"],
+                    "tool_call_id": tool_call.get("id", ""),
+                    "rule_id": pending.get("rule_id", ""),
+                },
+            )
+            audit_human_interrupt(audit_log, state, approval_payload, exc)
+            raise
+
+        answer_payload = human_answer_payload(answer)
+        audit_log.resume(state["run_id"], state["thread_id"], answer_payload)
+        if approval_is_approved(answer_payload):
+            audit_log.event(
+                state["run_id"],
+                state["thread_id"],
+                "approval_approved",
+                node_name="approval",
+                payload={"tool_name": tool_call["name"], "tool_call_id": tool_call.get("id", "")},
+            )
+            updates = {
+                "pending_tool_policy": None,
+                "approval_outcome": "approved",
+                "status": "running",
+            }
+            log_node_exit(audit_log, state, "approval", updates)
+            return updates
+
+        audit_log.event(
+            state["run_id"],
+            state["thread_id"],
+            "approval_rejected",
+            node_name="approval",
+            payload={"tool_name": tool_call["name"], "tool_call_id": tool_call.get("id", "")},
+        )
+        result = ToolMessage(
+            content=json.dumps(
+                {
+                    "outcome": "rejected_by_user",
+                    "status": "cancelled",
+                    "executed": False,
+                    "retryable": False,
+                    "reason": "The user did not approve this action.",
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            name=str(tool_call["name"]),
+            tool_call_id=str(tool_call.get("id", "")),
+            status="success",
+        )
+        updates = {
+            "messages": [result],
+            "pending_tool_policy": None,
+            "approval_outcome": "rejected",
+            "rejected_tool_names": rejected_tool_names_after(state, str(tool_call["name"])),
+            "status": "running",
+        }
+        log_node_exit(audit_log, state, "approval", updates)
+        return updates
+
+    def rejection_follow_up_node(state: AgentState) -> AgentState:
+        log_node_enter(audit_log, state, "rejection_follow_up")
+        payload = rejection_follow_up_payload(state)
+        try:
+            answer = interrupt(payload)
+        except GraphInterrupt as exc:
+            audit_log.event(
+                state["run_id"],
+                state["thread_id"],
+                "rejection_follow_up_requested",
+                node_name="rejection_follow_up",
+                payload={"summary": payload["summary"]},
+            )
+            audit_human_interrupt(audit_log, state, payload, exc)
+            raise
+
+        answer_payload = human_answer_payload(answer)
+        audit_log.resume(state["run_id"], state["thread_id"], answer_payload)
+        audit_log.event(
+            state["run_id"],
+            state["thread_id"],
+            "rejection_follow_up_received",
+            node_name="rejection_follow_up",
+            payload=answer_payload,
+        )
+        updates: AgentState = {
+            "messages": [HumanMessage(content=rejection_follow_up_message(answer_payload))],
+            "approval_outcome": None,
+            "status": "running",
+        }
+        log_node_exit(audit_log, state, "rejection_follow_up", updates)
+        return updates
+
     def human_gate(state: AgentState) -> AgentState:
         log_node_enter(audit_log, state, "human_gate")
         updates: AgentState = {"status": "running"}
@@ -250,9 +470,15 @@ def compile_agent_graph(
 
     builder.add_node("ensure_metadata", ensure_metadata)
     builder.add_node("llm", RunnableLambda(call_llm, afunc=acall_llm))
-    builder.add_node("enforce_tool_policy", enforce_tool_policy)
+    builder.add_node(
+        "rejection_summary",
+        RunnableLambda(call_rejection_summary, afunc=acall_rejection_summary),
+    )
+    builder.add_node("policy_engine", policy_engine_node)
     builder.add_node("tools", tool_node)
     builder.add_node("ask_human", ask_human_node)
+    builder.add_node("approval", approval_node)
+    builder.add_node("rejection_follow_up", rejection_follow_up_node)
     builder.add_node("human_gate", human_gate)
     builder.add_node("finalize", finalize)
 
@@ -262,21 +488,33 @@ def compile_agent_graph(
         "llm",
         route_after_llm,
         {
-            "tools": "enforce_tool_policy",
+            "tools": "policy_engine",
             "final": "finalize",
         },
     )
     builder.add_conditional_edges(
-        "enforce_tool_policy",
+        "policy_engine",
         route_after_tool_policy,
         {
             "tools": "tools",
             "ask_human": "ask_human",
+            "approval": "approval",
             "llm": "llm",
         },
     )
     builder.add_edge("tools", "human_gate")
     builder.add_edge("ask_human", "human_gate")
+    builder.add_conditional_edges(
+        "approval",
+        route_after_approval,
+        {
+            "tools": "tools",
+            "rejection_summary": "rejection_summary",
+            "llm": "llm",
+        },
+    )
+    builder.add_edge("rejection_summary", "rejection_follow_up")
+    builder.add_edge("rejection_follow_up", "llm")
     builder.add_edge("human_gate", "llm")
     builder.add_edge("finalize", END)
 
@@ -293,9 +531,19 @@ def route_after_llm(state: AgentState) -> str:
 def route_after_tool_policy(state: AgentState) -> str:
     latest = latest_message_from_state(state)
     if isinstance(latest, AIMessage) and latest.tool_calls:
+        if pending_confirmation_matches_latest_tool_call(state):
+            return "approval"
         if latest_human_tool_call(state, {}) is not None:
             return "ask_human"
         return "tools"
+    return "llm"
+
+
+def route_after_approval(state: AgentState) -> str:
+    if state.get("approval_outcome") == "approved":
+        return "tools"
+    if state.get("approval_outcome") == "rejected":
+        return "rejection_summary"
     return "llm"
 
 
@@ -304,6 +552,78 @@ def latest_message_from_state(state: AgentState) -> AnyMessage | None:
     if not messages:
         return None
     return messages[-1]
+
+
+def latest_tool_call_by_id(state: AgentState, tool_call_id: str) -> dict[str, Any] | None:
+    latest = latest_message_from_state(state)
+    if not isinstance(latest, AIMessage) or not latest.tool_calls:
+        return None
+    for tool_call in latest.tool_calls:
+        if str(tool_call.get("id", "")) == tool_call_id:
+            return cast(dict[str, Any], tool_call)
+    return None
+
+
+def pending_confirmation_matches_latest_tool_call(state: AgentState) -> bool:
+    pending = state.get("pending_tool_policy")
+    if not isinstance(pending, dict) or pending.get("decision") != PolicyDecision.CONFIRM.value:
+        return False
+    tool_call_id = str(pending.get("tool_call_id", ""))
+    return latest_tool_call_by_id(state, tool_call_id) is not None
+
+
+def cleared_policy_updates() -> AgentState:
+    return {
+        "pending_tool_policy": None,
+        "approval_outcome": None,
+        "status": "running",
+    }
+
+
+def rejected_tool_names_after(state: AgentState, tool_name: str) -> list[str]:
+    rejected = list(state.get("rejected_tool_names", []))
+    if tool_name not in rejected:
+        rejected.append(tool_name)
+    return rejected
+
+
+def rejection_follow_up_payload(state: AgentState) -> dict[str, str]:
+    latest = latest_message_from_state(state)
+    summary = str(latest.content) if isinstance(latest, AIMessage) else ""
+    if not summary:
+        summary = "The requested action was not performed because it was rejected."
+    return {
+        "kind": "rejection_follow_up",
+        "summary": summary,
+        "question": "What should I do next?",
+    }
+
+
+def rejection_follow_up_message(answer: dict[str, Any]) -> str:
+    value = answer.get("value")
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return "The human did not provide further instructions."
+
+
+def pending_tool_policy(
+    tool_call: dict[str, Any],
+    result: PolicyResult,
+) -> PendingToolPolicy:
+    return {
+        "decision": result.decision.value,
+        "rule_id": result.rule_id,
+        "reason": result.reason,
+        "tool_call_id": str(tool_call.get("id", "")),
+        "tool_name": str(tool_call.get("name", "")),
+        "display_payload": result.display_payload,
+    }
+
+
+def approval_is_approved(answer: dict[str, Any]) -> bool:
+    kind = str(answer.get("kind", "")).lower()
+    value = str(answer.get("value", "")).strip().lower()
+    return kind == "approve" or value in {"1", "approve", "approved", "yes", "y", "да"}
 
 
 def final_response_from_state(state: AgentState) -> str:
@@ -469,6 +789,27 @@ def audit_human_interrupt(
     if interrupt_values:
         question["interrupts"] = interrupt_values
     audit_log.interrupt(state["run_id"], state["thread_id"], question)
+
+
+def audit_policy_evaluation(
+    audit_log: AgentAuditLog,
+    state: AgentState,
+    tool_call: dict[str, Any],
+    result: PolicyResult,
+) -> None:
+    audit_log.event(
+        state["run_id"],
+        state["thread_id"],
+        "policy_evaluated",
+        node_name="policy_engine",
+        payload={
+            "tool_name": tool_call.get("name", ""),
+            "tool_call_id": tool_call.get("id", ""),
+            "decision": result.decision.value,
+            "rule_id": result.rule_id,
+            "reason": result.reason,
+        },
+    )
 
 
 def tool_call_requires_human(

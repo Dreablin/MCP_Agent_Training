@@ -138,7 +138,7 @@ def render_update(update: dict[str, Any], output: TextIO) -> str | None:
             continue
         if node_name == "llm":
             render_llm_update(node_update, output)
-        elif node_name in {"tools", "ask_human"}:
+        elif node_name in {"tools", "ask_human", "approval"}:
             render_tool_update(node_update, output)
         elif node_name == "finalize":
             final_response = str(node_update.get("final_response", ""))
@@ -175,14 +175,48 @@ def prompt_for_human_answer(
     input_func: Callable[[str], str],
     output: TextIO,
 ) -> HumanAnswer:
+    render_human_summary(payload.get("summary"), output)
     question = str(payload.get("question") or "The agent needs your input.")
     output.write(f"[human] {question}\n")
     reason = payload.get("reason")
     if reason:
         output.write(f"[human:reason] {reason}\n")
+    render_human_details(payload.get("details"), output)
     render_human_options(payload.get("options"), output)
+    if payload.get("kind") == "tool_approval":
+        while True:
+            value = input_func("human> ").strip()
+            answer = approval_answer(value)
+            if answer is not None:
+                return answer
+            output.write("[human:error] Choose 1 to approve or 2 to cancel.\n")
     value = input_func("human> ").strip()
     return {"kind": "answer", "value": value}
+
+
+def approval_answer(value: str) -> HumanAnswer | None:
+    normalized = value.strip().lower()
+    if normalized in {"1", "approve", "approved", "yes", "y", "да"}:
+        return {"kind": "approve", "value": value}
+    if normalized in {"2", "cancel", "reject", "no", "n", "нет", "отмена"} or normalized.startswith(
+        ("нет,", "не отправляй")
+    ):
+        return {"kind": "reject", "value": value}
+    return None
+
+
+def render_human_summary(summary: Any, output: TextIO) -> None:
+    if not summary:
+        return
+    output.write("[human:context]\n")
+    output.write(f"{text_content_value(summary)}\n")
+
+
+def render_human_details(details: Any, output: TextIO) -> None:
+    if not isinstance(details, dict):
+        return
+    for key, value in details.items():
+        output.write(f"[human:details] {key}: {text_content_value(value)}\n")
 
 
 def render_human_options(options: Any, output: TextIO) -> None:
@@ -218,13 +252,32 @@ def render_tool_update(update: dict[str, Any], output: TextIO) -> None:
         if not isinstance(message, ToolMessage):
             continue
         status = message.status or "success"
-        prefix = "[tool:error]" if status == "error" else "[tool:ok]"
+        outcome = tool_message_outcome(message)
+        if outcome == "rejected_by_user":
+            prefix = "[tool:cancelled]"
+        elif outcome == "denied_by_policy":
+            prefix = "[tool:denied]"
+        else:
+            prefix = "[tool:error]" if status == "error" else "[tool:ok]"
         name = message.name or message.tool_call_id
         content = text_content(message)
         if content:
             output.write(f"{prefix} {name} {content}\n")
         else:
             output.write(f"{prefix} {name}\n")
+
+
+def tool_message_outcome(message: ToolMessage) -> str | None:
+    content = message.content
+    if isinstance(content, str):
+        try:
+            content = json.loads(content)
+        except json.JSONDecodeError:
+            return None
+    if not isinstance(content, dict):
+        return None
+    outcome = content.get("outcome")
+    return outcome if isinstance(outcome, str) else None
 
 
 def messages_from_update(update: dict[str, Any]) -> list[BaseMessage]:
@@ -235,7 +288,10 @@ def messages_from_update(update: dict[str, Any]) -> list[BaseMessage]:
 
 
 def text_content(message: BaseMessage) -> str:
-    content = message.content
+    return text_content_value(message.content)
+
+
+def text_content_value(content: Any) -> str:
     if isinstance(content, str):
         return content
     return format_json(content)

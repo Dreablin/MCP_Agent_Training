@@ -9,6 +9,11 @@ AGENT_SYSTEM_PROMPT = "\n".join(
         "of inventing application state.",
         "Never claim that an action was completed until a successful ToolMessage "
         "confirms it.",
+        "A ToolMessage with outcome=rejected_by_user or outcome=denied_by_policy "
+        "means the requested action was not executed.",
+        "When a tool result has retryable=false because the human rejected or policy "
+        "denied it, do not call that tool again in the current user request. Continue "
+        "with unrelated work or explain that the action was not performed.",
         "Call state-changing tools one at a time. Wait for the ToolMessage result "
         "before calling another state-changing tool.",
         "Never fabricate tool results, IDs, dates, task status, email contents, or "
@@ -25,8 +30,22 @@ AGENT_SYSTEM_PROMPT = "\n".join(
         "unrecoverable without clarification.",
         "When you need human input before continuing, call ask_human with a clear "
         "question instead of ending with a final question.",
+        "Do not ask for separate approval before sending an email: the policy engine "
+        "will always request confirmation after you call email_send_email and before "
+        "it is executed.",
         "Keep final answers concise and grounded in observed tool results.",
-        "Do not mark an email read if any other actions from it was not cuccesful.",
+        "Do not mark an email read if another required action from it was not successful.",
+    ]
+)
+
+REJECTION_FOLLOW_UP_SYSTEM_PROMPT = "\n".join(
+    [
+        "Summarize the verified progress of the current request for a human who "
+        "rejected a proposed action.",
+        "Use a short bulleted list. Include completed work, the action that was not "
+        "performed, and any relevant remaining state.",
+        "Use only facts from the conversation and tool results. Do not call tools, "
+        "propose a new action, or claim that a cancelled action was executed.",
     ]
 )
 
@@ -35,3 +54,7 @@ def messages_with_system_prompt(messages: list[AnyMessage]) -> list[AnyMessage]:
     if messages and isinstance(messages[0], SystemMessage):
         return messages
     return [SystemMessage(content=AGENT_SYSTEM_PROMPT), *messages]
+
+
+def messages_for_rejection_follow_up(messages: list[AnyMessage]) -> list[AnyMessage]:
+    return [SystemMessage(content=REJECTION_FOLLOW_UP_SYSTEM_PROMPT), *messages]

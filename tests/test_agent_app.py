@@ -385,6 +385,340 @@ def test_ask_human_interrupts_and_resume_returns_answer_to_llm(tmp_path: Path) -
     assert answer == {"kind": "answer", "value": "Cancel the second one."}
 
 
+def test_email_send_requires_approval_before_executing_tool(tmp_path: Path) -> None:
+    async def run() -> tuple[dict[str, Any], dict[str, Any], FakeEmailSender, AgentAuditLog]:
+        audit_log = create_audit_log(tmp_path)
+        sender = FakeEmailSender()
+        model = ScriptedChatModel(
+            [
+                AIMessage(
+                    content="I will send the email.",
+                    tool_calls=[
+                        {
+                            "name": "email_send_email",
+                            "args": {
+                                "recipient_email": "recipient@example.test",
+                                "subject": "Meetings",
+                                "body": "Tomorrow you have a meeting.",
+                            },
+                            "id": "call-send-email",
+                        }
+                    ],
+                ),
+                AIMessage(content="The email was sent."),
+            ]
+        )
+        runtime = build_agent_graph(
+            model,
+            [sender.tool()],
+            audit_log,
+            checkpointer=InMemorySaver(),
+        )
+        config = {"configurable": {"thread_id": "thread-email-approval"}}
+        state = initial_state("Send an email", "thread-email-approval", "run-email-approval")
+        audit_log.start_run("run-email-approval", "thread-email-approval", "Send an email")
+
+        interrupted = await runtime.graph.ainvoke(state, config)
+        assert sender.calls == []
+        resumed = await runtime.aresume(
+            "thread-email-approval",
+            "run-email-approval",
+            {"kind": "approve"},
+        )
+        return interrupted, resumed["state"], sender, audit_log
+
+    interrupted, state, sender, audit_log = asyncio_run(run())
+
+    assert "__interrupt__" in interrupted
+    assert sender.calls == [
+        {
+            "recipient_email": "recipient@example.test",
+            "subject": "Meetings",
+            "body": "Tomorrow you have a meeting.",
+        }
+    ]
+    assert state["final_response"] == "The email was sent."
+    assert count_event_rows(audit_log.db_path, "approval_requested") == 1
+    assert count_event_rows(audit_log.db_path, "approval_approved") == 1
+
+
+def test_rejected_email_send_is_not_executed(tmp_path: Path) -> None:
+    async def run() -> tuple[dict[str, Any], FakeEmailSender, AgentAuditLog]:
+        audit_log = create_audit_log(tmp_path)
+        sender = FakeEmailSender()
+        model = ScriptedChatModel(
+            [
+                AIMessage(
+                    content="I will send the email.",
+                    tool_calls=[
+                        {
+                            "name": "email_send_email",
+                            "args": {
+                                "recipient_email": "recipient@example.test",
+                                "subject": "Meetings",
+                                "body": "Tomorrow you have a meeting.",
+                            },
+                            "id": "call-rejected-email",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content=(
+                        "- The email draft was prepared.\n"
+                        "- The email was not sent because the user rejected it."
+                    )
+                ),
+                AIMessage(content="The email was not sent."),
+            ]
+        )
+        runtime = build_agent_graph(
+            model,
+            [sender.tool()],
+            audit_log,
+            checkpointer=InMemorySaver(),
+        )
+        config = {"configurable": {"thread_id": "thread-email-rejected"}}
+        state = initial_state("Send an email", "thread-email-rejected", "run-email-rejected")
+        audit_log.start_run("run-email-rejected", "thread-email-rejected", "Send an email")
+
+        await runtime.graph.ainvoke(state, config)
+        follow_up = await runtime.aresume(
+            "thread-email-rejected",
+            "run-email-rejected",
+            {"kind": "reject"},
+        )
+        assert "__interrupt__" in follow_up["state"]
+        resumed = await runtime.aresume(
+            "thread-email-rejected",
+            "run-email-rejected",
+            {"kind": "answer", "value": "Leave it unsent."},
+        )
+        return resumed["state"], sender, audit_log
+
+    state, sender, audit_log = asyncio_run(run())
+    tool_messages = [message for message in state["messages"] if isinstance(message, ToolMessage)]
+
+    assert sender.calls == []
+    assert state["final_response"] == "The email was not sent."
+    assert len(tool_messages) == 1
+    assert '"status": "cancelled"' in str(tool_messages[0].content)
+    assert count_event_rows(audit_log.db_path, "approval_rejected") == 1
+    assert count_event_rows(audit_log.db_path, "rejection_follow_up_requested") == 1
+    assert count_rows(audit_log.db_path, "human_interrupts") == 2
+
+
+def test_rejected_email_send_cannot_request_approval_again_in_same_run(tmp_path: Path) -> None:
+    async def run() -> tuple[dict[str, Any], FakeEmailSender, AgentAuditLog]:
+        audit_log = create_audit_log(tmp_path)
+        sender = FakeEmailSender()
+        email_args = {
+            "recipient_email": "recipient@example.test",
+            "subject": "Meetings",
+            "body": "Tomorrow you have a meeting.",
+        }
+        model = ScriptedChatModel(
+            [
+                AIMessage(
+                    content="I will send the email.",
+                    tool_calls=[
+                        {
+                            "name": "email_send_email",
+                            "args": email_args,
+                            "id": "call-email-first",
+                        }
+                    ],
+                ),
+                AIMessage(content="- The email was prepared but not sent."),
+                AIMessage(
+                    content="I will try the same email again.",
+                    tool_calls=[
+                        {
+                            "name": "email_send_email",
+                            "args": email_args,
+                            "id": "call-email-second",
+                        }
+                    ],
+                ),
+                AIMessage(content="The email was not sent."),
+            ]
+        )
+        runtime = build_agent_graph(
+            model,
+            [sender.tool()],
+            audit_log,
+            checkpointer=InMemorySaver(),
+        )
+        config = {"configurable": {"thread_id": "thread-email-retry-denied"}}
+        state = initial_state(
+            "Send an email",
+            "thread-email-retry-denied",
+            "run-email-retry-denied",
+        )
+        audit_log.start_run(
+            "run-email-retry-denied",
+            "thread-email-retry-denied",
+            "Send an email",
+        )
+
+        await runtime.graph.ainvoke(state, config)
+        follow_up = await runtime.aresume(
+            "thread-email-retry-denied",
+            "run-email-retry-denied",
+            {"kind": "reject"},
+        )
+        assert "__interrupt__" in follow_up["state"]
+        resumed = await runtime.aresume(
+            "thread-email-retry-denied",
+            "run-email-retry-denied",
+            {"kind": "answer", "value": "Do not send it."},
+        )
+        return resumed["state"], sender, audit_log
+
+    state, sender, audit_log = asyncio_run(run())
+    tool_messages = [message for message in state["messages"] if isinstance(message, ToolMessage)]
+
+    assert sender.calls == []
+    assert state["final_response"] == "The email was not sent."
+    assert count_event_rows(audit_log.db_path, "approval_requested") == 1
+    assert count_event_rows(audit_log.db_path, "approval_rejected") == 1
+    assert any('"outcome": "denied_by_policy"' in str(message.content) for message in tool_messages)
+
+
+def test_new_user_request_can_ask_for_email_approval_again(tmp_path: Path) -> None:
+    async def run() -> tuple[dict[str, Any], FakeEmailSender, AgentAuditLog]:
+        audit_log = create_audit_log(tmp_path)
+        sender = FakeEmailSender()
+        email_args = {
+            "recipient_email": "recipient@example.test",
+            "subject": "Meetings",
+            "body": "Tomorrow you have a meeting.",
+        }
+        model = ScriptedChatModel(
+            [
+                AIMessage(
+                    content="I will send the first email.",
+                    tool_calls=[
+                        {
+                            "name": "email_send_email",
+                            "args": email_args,
+                            "id": "call-email-first-request",
+                        }
+                    ],
+                ),
+                AIMessage(content="- The first email was not sent."),
+                AIMessage(content="The first email was not sent."),
+                AIMessage(
+                    content="I will send it after the new request.",
+                    tool_calls=[
+                        {
+                            "name": "email_send_email",
+                            "args": email_args,
+                            "id": "call-email-new-request",
+                        }
+                    ],
+                ),
+            ]
+        )
+        runtime = build_agent_graph(
+            model,
+            [sender.tool()],
+            audit_log,
+            checkpointer=InMemorySaver(),
+        )
+        thread_id = "thread-email-new-request"
+        config = {"configurable": {"thread_id": thread_id}}
+        first_state = initial_state("Send an email", thread_id, "run-email-first-request")
+        audit_log.start_run("run-email-first-request", thread_id, "Send an email")
+
+        await runtime.graph.ainvoke(first_state, config)
+        await runtime.aresume(thread_id, "run-email-first-request", {"kind": "reject"})
+        await runtime.aresume(
+            thread_id,
+            "run-email-first-request",
+            {"kind": "answer", "value": "Leave it unsent."},
+        )
+
+        second_state = initial_state("Try sending it now", thread_id, "run-email-new-request")
+        audit_log.start_run("run-email-new-request", thread_id, "Try sending it now")
+        interrupted = await runtime.graph.ainvoke(second_state, config)
+        return interrupted, sender, audit_log
+
+    interrupted, sender, audit_log = asyncio_run(run())
+
+    assert "__interrupt__" in interrupted
+    assert sender.calls == []
+    assert count_event_rows(audit_log.db_path, "approval_requested") == 2
+
+
+def test_cancelled_email_approval_does_not_leak_into_next_turn(tmp_path: Path) -> None:
+    async def run() -> tuple[dict[str, Any], FakeEmailSender, FakeToolTracker]:
+        audit_log = create_audit_log(tmp_path)
+        sender = FakeEmailSender()
+        reader = FakeToolTracker()
+        model = ScriptedChatModel(
+            [
+                AIMessage(
+                    content="I will send the email.",
+                    tool_calls=[
+                        {
+                            "name": "email_send_email",
+                            "args": {
+                                "recipient_email": "recipient@example.test",
+                                "subject": "Meetings",
+                                "body": "Tomorrow you have a meeting.",
+                            },
+                            "id": "call-email-to-cancel",
+                        }
+                    ],
+                ),
+                AIMessage(content="- The email was not sent."),
+                AIMessage(content="The email was not sent."),
+                AIMessage(
+                    content="I will read the oldest unread email.",
+                    tool_calls=[
+                        {
+                            "name": "email_get_oldest_unread_email",
+                            "args": {},
+                            "id": "call-email-read",
+                        }
+                    ],
+                ),
+                AIMessage(content="I read the oldest unread email."),
+            ]
+        )
+        runtime = build_agent_graph(
+            model,
+            [sender.tool(), *reader.tools()],
+            audit_log,
+            checkpointer=InMemorySaver(),
+        )
+        thread_id = "thread-policy-cleanup"
+        config = {"configurable": {"thread_id": thread_id}}
+        first_state = initial_state("Send an email", thread_id, "run-email-cancelled")
+        audit_log.start_run("run-email-cancelled", thread_id, "Send an email")
+
+        await runtime.graph.ainvoke(first_state, config)
+        await runtime.aresume(thread_id, "run-email-cancelled", {"kind": "reject"})
+        await runtime.aresume(
+            thread_id,
+            "run-email-cancelled",
+            {"kind": "answer", "value": "Leave it unsent."},
+        )
+
+        second_state = initial_state("Read unread email", thread_id, "run-email-read")
+        audit_log.start_run("run-email-read", thread_id, "Read unread email")
+        result = await runtime.graph.ainvoke(second_state, config)
+        return result, sender, reader
+
+    state, sender, reader = asyncio_run(run())
+    tool_messages = [message for message in state["messages"] if isinstance(message, ToolMessage)]
+
+    assert sender.calls == []
+    assert reader.calls == [("email_get_oldest_unread_email", {})]
+    assert state["final_response"] == "I read the oldest unread email."
+    assert all("Approval could not find" not in str(message.content) for message in tool_messages)
+
+
 def test_tool_error_formatter_returns_clean_message() -> None:
     error = MCPToolExecutionError("VALIDATION_ERROR: start_at must not include timezone")
 
@@ -621,6 +955,29 @@ class FakeReadOnlyToolTracker:
         return "event-1"
 
 
+class FakeEmailSender:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, str]] = []
+
+    def tool(self) -> StructuredTool:
+        return StructuredTool.from_function(
+            self.send_email,
+            name="email_send_email",
+            description="Send an email.",
+            metadata={"read_only": False},
+        )
+
+    def send_email(self, recipient_email: str, subject: str, body: str) -> str:
+        self.calls.append(
+            {
+                "recipient_email": recipient_email,
+                "subject": subject,
+                "body": body,
+            }
+        )
+        return "sent"
+
+
 def error_tool() -> StructuredTool:
     def calendar_update_calendar_event(event_id: str, start_at: str) -> str:
         raise ToolException(
@@ -654,6 +1011,16 @@ def create_audit_log(tmp_path: Path) -> AgentAuditLog:
 def count_rows(db_path: Path, table_name: str) -> int:
     with sqlite3.connect(db_path) as connection:
         cursor = connection.execute(f"select count(*) from {table_name}")
+        value = cursor.fetchone()[0]
+    return int(value)
+
+
+def count_event_rows(db_path: Path, event_type: str) -> int:
+    with sqlite3.connect(db_path) as connection:
+        cursor = connection.execute(
+            "select count(*) from agent_events where event_type = ?",
+            (event_type,),
+        )
         value = cursor.fetchone()[0]
     return int(value)
 

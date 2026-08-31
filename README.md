@@ -74,27 +74,46 @@ Todo MCP has no URL. It is launched by an MCP client over stdio, for example:
 python -m apps.todo_MCP.main
 ```
 
-## Agent Skeleton
+## Agent Prototype
 
-`apps/agent_app/` contains a LangGraph-based agent shell for coordinating the
-three MCP servers. The first implementation focuses on orchestration mechanics:
+`apps/agent_app/` is a local LangGraph prototype that coordinates the three MCP
+servers. It is deliberately a learning environment, not a production agent: use
+it to practice agent loops, identify unsafe behavior, reproduce edge cases from
+the audit log, and evolve the policy rules.
 
-- MCP tool discovery through Email HTTP MCP, Calendar HTTP MCP, and Todo stdio MCP;
-- an agent-local `get_current_datetime` tool for resolving relative dates and
-  times using this computer's local clock;
-- an agent-local `ask_human` tool for model-selected clarification, implemented
-  with LangGraph interrupt/resume;
-- persistent graph checkpoints for pause/resume human-in-the-loop flows;
-- LangGraph-native message history, including AI tool calls and ToolMessage results;
-- a simple `LLM -> tools -> LLM` loop using standard LangGraph ToolNode execution;
-- a system prompt that tells the model to use MCP tools as the source of truth
-  and not claim action success before a successful tool result;
-- tool errors return to the LLM as `ToolMessage(status="error")` before any human
-  clarification is considered;
-- a pass-through human gate after tool execution, ready for future deterministic
-  interrupt rules without adding those rules yet;
-- structured SQLite audit logging for runs, node events, tool calls, human
-  interrupts, and state snapshots.
+The core flow is `User -> LLM -> PolicyEngine -> MCP tools -> LLM`. The agent can
+make several sequential tool calls, keeps LangGraph-native message history, and
+saves checkpoints so a paused graph can resume in the same thread. It also has
+two local tools: `get_current_datetime` for relative dates and `ask_human` for
+model-requested clarification.
+
+### Current Safety Policy
+
+`PolicyEngine` is deterministic code between the LLM and MCP execution; it does
+not make another model call to decide whether a tool is allowed.
+
+- `email_send_email` always pauses for human confirmation and shows recipient,
+  subject, and body before MCP is called.
+- In the CLI, `1` approves and `2` cancels. Unknown confirmation input is asked
+  again rather than treated as a decision.
+- A cancelled send is recorded as `executed=false` and `retryable=false`. The
+  same email-send tool is denied for the rest of that user request, so the LLM
+  cannot open repeated approval prompts. A new user command starts with a clean
+  policy context.
+- After a cancellation, a tools-disabled LLM creates a short summary of verified
+  progress. The graph then pauses again and asks the user what to do next; that
+  answer becomes the next human message for the agent.
+- State-changing tools must be called one at a time. Read-only tool batches are
+  allowed.
+
+The current rules are intentionally small. Useful exercises include finding ways
+to bypass or over-block a policy, deciding which actions need confirmation,
+improving the human review payload, adding argument-specific policies, and using
+historical audit data to evaluate agent behavior.
+
+Every run is logged to SQLite with node events, tool calls, policy decisions,
+human interrupts, and state snapshots. This makes a failed or surprising flow
+inspectable after the fact.
 
 The default LLM provider is local Ollama with `AGENT_LLM_MODEL=gemma4:31b`.
 Supported provider values are `ollama` and `openai`. To switch to OpenAI, set
@@ -121,4 +140,4 @@ python -m apps.agent_app.cli
 After installing the project, the same CLI is also available as `agent-cli`. The
 CLI opens the MCP registry once, keeps one LangGraph thread for the session,
 streams LLM/tool/human/final updates for each command, resumes after a human
-answer when `ask_human` interrupts, and then waits for the next command.
+answer when the graph interrupts, and then waits for the next command.

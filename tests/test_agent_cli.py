@@ -8,7 +8,15 @@ from langchain_core.tools import StructuredTool
 from langgraph.checkpoint.memory import InMemorySaver
 
 from apps.agent_app.audit import AgentAuditLog
-from apps.agent_app.cli import exception_messages, interactive_loop, parse_args, run_turn
+from apps.agent_app.cli import (
+    approval_answer,
+    exception_messages,
+    interactive_loop,
+    parse_args,
+    prompt_for_human_answer,
+    render_tool_update,
+    run_turn,
+)
 from apps.agent_app.config import AgentAppSettings
 from apps.agent_app.graph import build_agent_graph, create_async_runtime
 from apps.agent_app.hitl import build_ask_human_tool
@@ -19,6 +27,54 @@ def test_parse_args_accepts_thread_id_and_debug() -> None:
 
     assert args.thread_id == "debug-thread"
     assert args.debug is True
+
+
+def test_approval_answer_maps_numbered_options_and_rejects_unknown_input() -> None:
+    assert approval_answer("1") == {"kind": "approve", "value": "1"}
+    assert approval_answer("2") == {"kind": "reject", "value": "2"}
+    assert approval_answer("Нет, не отправляй это письмо.") == {
+        "kind": "reject",
+        "value": "Нет, не отправляй это письмо.",
+    }
+    assert approval_answer("6") is None
+
+
+def test_approval_prompt_repeats_after_unknown_input() -> None:
+    answers = iter(["6", "1"])
+    output = StringIO()
+
+    answer = prompt_for_human_answer(
+        {
+            "kind": "tool_approval",
+            "question": "Approve sending this email?",
+            "options": [
+                {"id": "approve", "label": "Approve"},
+                {"id": "reject", "label": "Cancel"},
+            ],
+        },
+        lambda prompt: next(answers),
+        output,
+    )
+
+    assert answer == {"kind": "approve", "value": "1"}
+    assert "[human:error] Choose 1 to approve or 2 to cancel." in output.getvalue()
+
+
+def test_cancelled_tool_result_is_not_rendered_as_tool_ok() -> None:
+    output = StringIO()
+    message = ToolMessage(
+        content=(
+            '{"executed": false, "outcome": "rejected_by_user", '
+            '"retryable": false, "status": "cancelled"}'
+        ),
+        name="email_send_email",
+        tool_call_id="call-email",
+        status="success",
+    )
+
+    render_tool_update({"messages": [message]}, output)
+
+    assert output.getvalue().startswith("[tool:cancelled] email_send_email")
 
 
 def test_run_turn_streams_tool_usage_and_final_response(tmp_path: Path) -> None:
@@ -202,6 +258,116 @@ def test_run_turn_handles_human_interrupt_and_resume(tmp_path: Path) -> None:
     assert any(isinstance(message, ToolMessage) for message in model.seen_messages[-1])
 
 
+def test_run_turn_displays_email_approval_details(tmp_path: Path) -> None:
+    audit_log = create_audit_log(tmp_path)
+    sender = FakeEmailSender()
+    model = ScriptedChatModel(
+        [
+            AIMessage(
+                content="I will send the email.",
+                tool_calls=[
+                    {
+                        "name": "email_send_email",
+                        "args": {
+                            "recipient_email": "recipient@example.test",
+                            "subject": "Meetings",
+                            "body": "Tomorrow you have a meeting.",
+                        },
+                        "id": "call-send-email",
+                    }
+                ],
+            ),
+            AIMessage(content="The email was sent."),
+        ]
+    )
+    runtime = build_agent_graph(
+        model,
+        [sender.tool()],
+        audit_log,
+        checkpointer=InMemorySaver(),
+    )
+    output = StringIO()
+
+    final_response = asyncio_run(
+        run_turn(
+            runtime,
+            "Send the email",
+            "cli-thread",
+            input_func=lambda prompt: "1",
+            output=output,
+        )
+    )
+
+    text = output.getvalue()
+    assert "[human] Approve sending this email?" in text
+    assert "[human:details] recipient_email: recipient@example.test" in text
+    assert "[human:details] subject: Meetings" in text
+    assert sender.calls == [
+        {
+            "recipient_email": "recipient@example.test",
+            "subject": "Meetings",
+            "body": "Tomorrow you have a meeting.",
+        }
+    ]
+    assert final_response == "The email was sent."
+
+
+def test_run_turn_requests_follow_up_after_rejected_email(tmp_path: Path) -> None:
+    audit_log = create_audit_log(tmp_path)
+    sender = FakeEmailSender()
+    model = ScriptedChatModel(
+        [
+            AIMessage(
+                content="I will send the email.",
+                tool_calls=[
+                    {
+                        "name": "email_send_email",
+                        "args": {
+                            "recipient_email": "recipient@example.test",
+                            "subject": "Meetings",
+                            "body": "Tomorrow you have a meeting.",
+                        },
+                        "id": "call-rejected-email",
+                    }
+                ],
+            ),
+            AIMessage(
+                content=(
+                    "- The calendar was checked.\n"
+                    "- The email was not sent because the user rejected it."
+                )
+            ),
+            AIMessage(content="I will leave the email unsent."),
+        ]
+    )
+    runtime = build_agent_graph(
+        model,
+        [sender.tool()],
+        audit_log,
+        checkpointer=InMemorySaver(),
+    )
+    output = StringIO()
+    answers = iter(["2", "Leave it unsent."])
+
+    final_response = asyncio_run(
+        run_turn(
+            runtime,
+            "Send the email",
+            "cli-thread",
+            input_func=lambda prompt: next(answers),
+            output=output,
+        )
+    )
+
+    text = output.getvalue()
+    assert "[tool:cancelled] email_send_email" in text
+    assert "[human:context]" in text
+    assert "- The calendar was checked." in text
+    assert "[human] What should I do next?" in text
+    assert sender.calls == []
+    assert final_response == "I will leave the email unsent."
+
+
 def test_cli_async_runtime_supports_async_streaming(tmp_path: Path) -> None:
     settings = AgentAppSettings(
         checkpoint_db_path=tmp_path / "agent_checkpoints.db",
@@ -278,6 +444,29 @@ class FakeToolTracker:
     def email_get_oldest_unread_email(self) -> str:
         self.calls.append(("email_get_oldest_unread_email", {}))
         return "email-1"
+
+
+class FakeEmailSender:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, str]] = []
+
+    def tool(self) -> StructuredTool:
+        return StructuredTool.from_function(
+            self.send_email,
+            name="email_send_email",
+            description="Send an email.",
+            metadata={"read_only": False},
+        )
+
+    def send_email(self, recipient_email: str, subject: str, body: str) -> str:
+        self.calls.append(
+            {
+                "recipient_email": recipient_email,
+                "subject": subject,
+                "body": body,
+            }
+        )
+        return "sent"
 
 
 def create_audit_log(tmp_path: Path) -> AgentAuditLog:
