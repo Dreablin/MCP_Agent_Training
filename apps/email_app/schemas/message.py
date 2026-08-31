@@ -37,6 +37,38 @@ class EmailMessageCreate(EmailMessageBase):
     id: str = Field(default_factory=new_message_id)
 
 
+class EmailMessageImport(BaseModel):
+    sender_name: str = Field(min_length=1, max_length=200)
+    sender_email: str = Field(min_length=3, max_length=320)
+    recipient_email: str = Field(min_length=3, max_length=320)
+    subject: str = Field(min_length=1, max_length=300)
+    body: str = Field(min_length=1, max_length=20_000)
+    date: datetime
+
+    @field_validator("sender_email", "recipient_email")
+    @classmethod
+    def validate_basic_email(cls, value: str) -> str:
+        if "@" not in value:
+            msg = "Email address must contain @"
+            raise ValueError(msg)
+        return value
+
+    @field_validator("date")
+    @classmethod
+    def validate_date(cls, value: datetime) -> datetime:
+        return require_aware(value, "date")
+
+    def to_create_payload(self) -> EmailMessageCreate:
+        return EmailMessageCreate(
+            sender_name=self.sender_name,
+            sender_email=self.sender_email,
+            recipient_email=self.recipient_email,
+            subject=self.subject,
+            body=self.body,
+            received_at=self.date,
+        )
+
+
 class EmailMessageMove(BaseModel):
     folder: EmailFolder
 

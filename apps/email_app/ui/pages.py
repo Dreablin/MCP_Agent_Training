@@ -443,6 +443,23 @@ def register_pages(
             render_mail()
             ui.notify(last_action, type="positive")
 
+        def receive_all_messages() -> None:
+            nonlocal selected_folder, selected_message_id, last_action
+            try:
+                created_messages = run_with_service(
+                    lambda service: service.receive_all_from_directory(settings.test_messages_dir)
+                )
+            except Exception as exc:
+                notify_error(exc)
+                return
+
+            selected_folder = EmailFolder.INBOX
+            if created_messages:
+                selected_message_id = created_messages[0].id
+            last_action = f"Loaded {len(created_messages)} messages."
+            render_mail()
+            ui.notify(last_action, type="positive")
+
         def set_message_read(message_id: str, is_read: bool) -> None:
             nonlocal selected_message_id, last_action
             try:
@@ -717,10 +734,7 @@ def register_pages(
                 ui.button(
                     "Receive All",
                     icon="cloud_download",
-                    on_click=lambda: show_placeholder(
-                        "Receive All",
-                        "Bulk receive will be added here.",
-                    ),
+                    on_click=receive_all_messages,
                 ).props("outline")
                 ui.button("Info", icon="info", on_click=render_info).props("flat")
 

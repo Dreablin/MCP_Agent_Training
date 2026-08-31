@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from apps.email_app.database import Base, build_engine, build_session_factory
 from apps.email_app.models import EmailFolder
-from apps.email_app.repositories import EmailMessageRepository
+from apps.email_app.repositories import EmailMessageRepository, EmailSearch
 from apps.email_app.schemas import EmailMessageCreate
 from apps.email_app.services import EmailMessageService
 from shared.errors import NotFoundError, ValidationAppError
@@ -73,6 +73,50 @@ def test_service_records_message_change_events(service: EmailMessageService) -> 
         EmailFolder.INBOX,
     ]
     assert service.pull_events() == []
+
+
+def test_service_receives_all_messages_from_directory(
+    service: EmailMessageService,
+    tmp_path: Path,
+) -> None:
+    source_dir = tmp_path / "messages"
+    source_dir.mkdir()
+    (source_dir / "newer.json").write_text(
+        """
+        {
+          "date": "2026-08-30T11:30:00-05:00",
+          "sender_name": "Newer Sender",
+          "sender_email": "newer@example.test",
+          "recipient_email": "me@example.test",
+          "subject": "Newer message",
+          "body": "This message has the later date."
+        }
+        """,
+        encoding="utf-8",
+    )
+    (source_dir / "older.json").write_text(
+        """
+        {
+          "date": "2026-08-30T09:00:00-05:00",
+          "sender_name": "Older Sender",
+          "sender_email": "older@example.test",
+          "recipient_email": "me@example.test",
+          "subject": "Older message",
+          "body": "This message has the earlier date."
+        }
+        """,
+        encoding="utf-8",
+    )
+
+    created = service.receive_all_from_directory(source_dir)
+    inbox_messages = service.list(EmailSearch(folder=EmailFolder.INBOX))
+    events = service.pull_events()
+
+    assert [message.subject for message in created] == ["Older message", "Newer message"]
+    assert [message.subject for message in inbox_messages] == ["Older message", "Newer message"]
+    assert all(message.folder == EmailFolder.INBOX for message in created)
+    assert all(message.is_read is False for message in created)
+    assert all(event.action == "created" for event in events)
 
 
 def test_service_read_and_trash_flow(service: EmailMessageService) -> None:

@@ -8,9 +8,15 @@ The project is not a production system. It does not include real email delivery,
 
 ## Applications
 
-- **Email app**: a fake local mailbox for creating, reading, searching, moving to trash, and deleting email-like messages.
+- **Email app**: a local mailbox for creating, reading, searching, moving to trash, and deleting email-like messages. The **Receive All** button loads all JSON test messages from `apps/email_app/test_messages/` into Inbox as unread messages.
 - **Todo App**: a local task tracker for creating tasks, changing status and priority, completing tasks, and archiving them.
 - **Calendar App**: a local calendar for creating events, changing schedules, cancelling/restoring events, deleting events, and checking overlaps. Calendar times are treated as local naive values without timezone conversion.
+
+## Branches
+
+- `main`: the base applications.
+- `MCP`: MCP servers for the applications.
+- `Agent`: a basic agent for handling requests through the MCP servers.
 
 ## Documentation
 
