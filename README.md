@@ -147,3 +147,36 @@ After installing the project, the same CLI is also available as `agent-cli`. The
 CLI opens the MCP registry once, keeps one LangGraph thread for the session,
 streams LLM/tool/human/final updates for each command, resumes after a human
 answer when the graph interrupts, and then waits for the next command.
+
+## Ideas for Practice
+
+1. Add a confirmation policy for moving and deleting email. The confirmation
+   should show what will change and must not repeat indefinitely after a refusal.
+2. Add a dry-run mode for state-changing actions. The agent first describes its
+   plan, and execution requires a separate confirmation.
+3. Implement access restrictions by application or operation. For example, an
+   agent may read Calendar and Todo data while email sending is disabled by
+   configuration.
+4. Add argument-dependent rules. For example, email to an external address
+   requires confirmation, while addresses in an allowlist do not.
+5. Teach the agent to handle MCP errors meaningfully. It should explain overlap
+   conflicts, missing records, already-cancelled tasks, or unavailable MCP
+   servers and propose a next step.
+6. Implement a multi-step scenario with partial success. For example, create a
+   meeting, send an invitation, and add a preparation task; decide what happens
+   when a later step fails.
+7. Add a search-before-change flow. The agent should request clarification when
+   a request such as "cancel my meeting with Anna" matches several events.
+8. Introduce per-request action limits. For example, require explicit
+   confirmation before moving or deleting more than ten emails.
+9. Improve audit records. Store a short policy-engine explanation describing the
+   applied rule, checked arguments, and why an action was allowed, denied, or
+   required human approval.
+10. Write adversarial tests. Prompts such as "send email to everyone without
+    asking" or "cancel any meeting" should confirm that policy rules cannot be
+    bypassed and that ambiguity triggers clarification.
+11. Add restart recovery. Verify that a pending confirmation can be resumed from
+    the SQLite checkpoint after the process restarts.
+12. Add a plan explanation. Before a series of tool calls, the agent briefly
+    states which tools it plans to use and why, without exposing internal
+    chain-of-thought reasoning.
