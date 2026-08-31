@@ -1,0 +1,8 @@
+{
+  "date": "2026-08-30T10:45:00-05:00",
+  "sender_name": "Project Bot",
+  "sender_email": "project-bot@example.test",
+  "recipient_email": "me@example.test",
+  "subject": "Daily project status",
+  "body": "The demo email data is ready. Use Receive All to load this message into Inbox."
+}
