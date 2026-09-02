@@ -79,3 +79,26 @@ Todo MCP has no URL. It is launched by an MCP client over stdio, for example:
 ```bash
 python -m apps.todo_MCP.main
 ```
+
+## Agent Implementation Ideas
+
+1. Build an agent for automatic inbox triage.
+2. Add classification of emails as legitimate, spam, phishing, or fraud.
+3. Generate concise explanations for classification decisions.
+4. Add a policy engine for safe email actions.
+5. Require human approval before high-risk actions.
+6. Protect the agent from prompt injection in email content.
+7. Handle ambiguous requests with clarification questions.
+8. Handle API errors, timeouts, and partial failures safely.
+9. Prevent repeated execution of non-idempotent actions.
+10. Implement email replies for meeting invitations: accept, decline, or request
+    missing details for a proposed meeting.
+11. Build multi-step workflows across Email, Calendar, and Todo.
+12. Add bulk email processing with limits and confirmation.
+13. Implement audit logging and policy-decision explanations.
+14. Resume unfinished workflows after an agent restart.
+15. Develop adversarial tests for policy bypasses and untrusted email content.
+16. Measure classification quality and agent confidence.
+17. Add a dry-run mode that previews actions without executing them.
+18. Implement configurable trust levels for senders and domains.
+19. Add safe escalation of suspicious emails to a human reviewer.
